@@ -1,0 +1,49 @@
+# Linux desktop integration
+
+## Dependencies for the integrator
+
+Add these exact dependencies to the shared manifest (not changed by this worker):
+
+```toml
+mpris-server = { version = "0.10.0", default-features = false, features = ["tokio"] }
+```
+
+`src/desktop.rs` exports the requested async `run` function. It registers the app-owned MPRIS service `org.mpris.MediaPlayer2.com.customspotify.CustomSpotify` (the builder argument is `com.customspotify.CustomSpotify`). It never discovers or controls an official Spotify process.
+
+MPRIS calls return a visible D-Bus error on command-channel backpressure. Desktop request IDs are allocated atomically in the high half of `u64`. Registration errors are returned as `AppError::Unavailable`. Dropping the application `watch::Sender` ends the adapter and unregisters the MPRIS object.
+
+MPRIS position is extrapolated from the backend's monotonic anchor only while playing and clamped to duration. State transitions publish only changed properties. Decoder-confirmed seek revisions emit `Seeked`; ordinary position anchors do not wake desktop clients with false seek signals.
+
+## Validation
+
+Root checks and tests pass. The release app registered its MPRIS service on the active user bus. MPRIS Raise, setting/getting Shuffle, and graceful Quit were smoke-tested without login or audio. See `VALIDATION.md`; playback-specific desktop behavior still requires a real account.
+
+## Application icon and window identity
+
+`assets/icons/custom-spotify.svg` is the hand-written source (rounded green tile, near-black
+disc holding five green waveform bars). `assets/icons/custom-spotify-{16,32,48,64,128,256,512}.png`
+are renders of it (`magick -background none -density <4 x s * 96 / 512> custom-spotify.svg -resize <s>x<s>`); the 16px one comes from `custom-spotify-16.svg`, a simplified three-bar, pixel-aligned version so it stays crisp.
+Sizes 16, 32, 48, 64 and 256 are embedded (`src/app_icon.rs`) for the Iced window icon.
+The app has no tray entry: it is a plain window app, and closing the window quits.
+
+The window sets Wayland `app_id` / X11 class `custom-spotify`, matching `packaging/custom-spotify.desktop`
+(`Icon=custom-spotify`, `StartupWMClass=custom-spotify`), so KDE matches the window to the launcher.
+Install for the current user:
+
+```sh
+for s in 16 32 48 64 128 256 512; do
+  install -Dm644 assets/icons/custom-spotify-$s.png ~/.local/share/icons/hicolor/${s}x${s}/apps/custom-spotify.png
+done
+install -Dm644 assets/icons/custom-spotify.svg ~/.local/share/icons/hicolor/scalable/apps/custom-spotify.svg
+install -Dm644 packaging/custom-spotify.desktop ~/.local/share/applications/custom-spotify.desktop
+gtk-update-icon-cache -q ~/.local/share/icons/hicolor 2>/dev/null || true
+```
+
+## Title bar, window position and zoom
+
+The window draws its own title bar (see `FRONTEND.md`); Settings can switch to the system one.
+Window size, maximized state and zoom are remembered. On native Wayland a client cannot read or set
+its position, so Custom Spotify does not try. To remember position under KDE, add a KWin window rule
+(System Settings > Window Management > Window Rules) matching window class `custom-spotify` with
+"Position" set to "Remember" (and optionally "Size", "Maximized" and "Keep above/below"). On X11 or
+XWayland the app restores its saved position itself.

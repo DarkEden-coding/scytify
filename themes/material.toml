@@ -1,0 +1,39 @@
+# Material 3 dark tonal surfaces with a soft elevation shadow.
+version = 2
+font_family = "sans-serif"
+icons = "lucide"
+
+[colors]
+background = "#141218"
+surface = "#211F26"
+surface_raised = "#2B2930"
+surface_hover = "#36343B"
+border = "#49454F"
+text = "#E6E0E9"
+text_subdued = "#CAC4D0"
+accent = "#D0BCFF"
+on_accent = "#381E72"
+error = "#F2B8B5"
+focus = "#E8DEF8"
+danger_hover = "#D32F2F"
+on_danger = "#FFFFFF"
+
+[shape]
+radius_small = 20
+radius_large = 16
+border_width = 0
+spacing = 12
+padding = 16
+row_height = 56
+
+[shadow]
+style = "soft"
+offset = 2
+blur = 6
+strength = 0.3
+
+[font_size]
+small = 12
+body = 14
+heading = 22
+display = 32

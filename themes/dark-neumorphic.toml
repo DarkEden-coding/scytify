@@ -1,0 +1,39 @@
+# Soft extruded surfaces with paired dark and light shadows.
+version = 2
+font_family = "sans-serif"
+icons = "lucide"
+
+[colors]
+background = "#171B22"
+surface = "#222832"
+surface_raised = "#2A313D"
+surface_hover = "#313946"
+border = "#3A4352"
+text = "#F1F4F8"
+text_subdued = "#A7B3C5"
+accent = "#9BDFBC"
+on_accent = "#171B22"
+error = "#FF9999"
+focus = "#B9D7FF"
+danger_hover = "#C93C4B"
+on_danger = "#FFFFFF"
+
+[shape]
+radius_small = 14
+radius_large = 18
+border_width = 0
+spacing = 12
+padding = 16
+row_height = 56
+
+[shadow]
+style = "neumorphic"
+offset = 5
+blur = 12
+strength = 0.35
+
+[font_size]
+small = 12
+body = 14
+heading = 22
+display = 32

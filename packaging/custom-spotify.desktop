@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Custom Spotify
+Comment=Native personal Spotify player
+Exec=custom-spotify
+Icon=custom-spotify
+StartupWMClass=custom-spotify
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true

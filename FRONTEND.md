@@ -1,0 +1,116 @@
+# Native frontend
+
+`frontend::run(FrontendPort) -> iced::Result` remains unchanged. Run on the main thread within the existing Tokio runtime. Iced reuses that runtime through `SharedExecutor`, rather than starting another worker pool. Normal runtime uses only real backend metadata.
+
+## Implemented
+
+- Spotify-style layout: a 280px sidebar (Home/Search navigation, "Your Library" with a filter, a pinned Liked Songs row (accent-gradient cover with a heart, "Playlist · N songs" once its page has loaded) and playlist rows with 48px covers), a main panel with a top bar (back/forward, pill search, queue and settings toggles), an optional 300px queue panel, and a full-width now-playing bar (cover and track, transport with progress, queue/mute/volume). Errors appear as a dismissible toast over the main view.
+- Home shows two shelves, "Your playlists" and "Saved albums" (`Query::SavedAlbums`, first 20 fetched alongside Home), each one row of cards with "Show all" opening the full paged grid. Home and the playlist grid share `Query::OwnPlaylists`; `Route::home` tells them apart.
+- Search (`Query::Search`, debounced 350 ms from the top bar) opens an overview. Its top row puts "Top result" (40%) beside "Songs" (60%), and stacks them when the grid is narrower than 640px. The top result is a large card with the cover (round for artists), the name in display size and an "Artist"/"Album"/"Song" pill. Albums and songs show a play button on hover; artists have no play source. `frontend/search.rs` picks it: the first artist, album and song compete on how well their name matches the text (exact, prefix, contains, none, ignoring case), and ties go to the artist, then the album. "Songs" lists the first four tracks as compact rows (thumbnail with a hover play button, title, artist, duration; double-click plays `PlaySource::Track`). Below are one row of artists and one of albums. Every section's "Show all" opens the paged `SearchTracks`/`SearchArtists`/`SearchAlbums` page, and sections without results are left out. An empty search shows a start page without a request; a search without results says so.
+- Grid pages are titled by their route ("Saved albums", "Albums for “x”"). Artist album grids also get an artist header. Liked Songs is a track page with the gradient heart cover, an accent-tinted header and `PlaySource::LikedSongs`.
+- Album and playlist pages have a header (cover, kind, title, artist/song count/duration), a big play button with shuffle, and a numbered track table (index or hover play button, thumbnail on playlists, title and artist links, album link, hover play-next/add-to-queue, duration). The play button pauses and resumes when the page is the playing context, and otherwise starts from the first playable track. Click selects a row, double-click plays. The backend drops local files and episodes from track pages, so rows play from their `Track::source_index` (raw upstream position). Cards show a play button over the hovered cover.
+- Section headings end at the right edge of the card grid, so "Show all" lines up with the last card in every theme. Until the main scroll area reports its size, it is estimated from the window with the same edges, gaps and shadow margins the frame uses.
+- Navigation keeps a bounded back/forward history (50 routes) of query, title, header art and Settings. Refining a search replaces the current search page (overview or "Show all") instead of adding entries, and clearing the field on a search page shows the start page. The sidebar Search entry opens the search page and focuses the field, and is highlighted on every search page. Back/Forward to a search page puts its text back into the field.
+- Keyboard shortcuts (`shortcuts.rs`, listed in Settings under "Keyboard shortcuts" and in the README): Space play/pause, Ctrl+Left/Right previous/next, Ctrl+Up/Down volume ±5%, Ctrl+S shuffle, Ctrl+R repeat cycle (off, queue, one), "/" or Ctrl+L/Ctrl+F focus search, Esc closes the device picker, then Settings, then the queue panel, Alt+Left/Right and mouse back/forward navigate. Only key presses no widget captured are mapped, so a focused text field keeps Space and "/" as text and handles Esc itself by leaving the field.
+- Incremental loading: the main list, sidebar and queue append the next 100-item page when scrolled near their end (or via a "Show more" row). Every `Page` carries `next_offset`, the raw upstream offset after the rows it consumed. Pages continue from there, so dropped rows (followed playlists, local files, episodes) are not requested again and a page that kept no rows still advances. A list stops appending once it holds `MAX_LOADED_ITEMS` (1000); pages are kept whole, so it can end up to one page longer. Past that the main view offers compact Previous/Next paging and the sidebar says how many it shows. Appends only apply when they continue the loaded window: same generation, kind, contiguous offset and, for the queue, the same revision. Sidebar filtering searches loaded playlists only and never touches the main browser.
+- Main, sidebar and queue lists virtualize fixed-height rows (`shape.row_height` for tracks and queue, 64px sidebar rows) and grids by whole card rows, with overscan. Blocks above a virtualized list have fixed heights in `layout.rs`, so the visible window and the artwork requests agree. The grid width comes from the measured main scroll area (an Iced `sensor`), estimated from the window until the first layout.
+- Custom title bar: the main window opens without OS decorations (`decorations: false`; Settings > Appearance > Title bar switches to the system's with `window::toggle_decorations`, no restart). The top bar (`view/topbar.rs`) carries the app icon, back/forward, search, queue and settings, then a separator and minimize, maximize/restore and close (Lucide `minus`, `square`, `copy`, `x`). Empty bar space drags the window (`window::drag`), a double click toggles maximize, close sends the same `CloseRequested` path as the window manager (which quits). `chrome.rs` overlays invisible 6px edge and 10px corner grips (`window::drag_resize`, matching resize cursors) that disappear while maximized or with the system title bar. Theme tokens `colors.danger_hover` (default `#E81123`) and `colors.on_danger` (default `#FFFFFF`) color the close hover; older themes load unchanged.
+- Window memory: size, position, maximized state, zoom and the title bar choice are saved with the preferences (all optional, so older files load; bounded and clamped on load). Size is the restore size, kept while maximized. Native Wayland hides the window position from clients, so there it is not saved or restored (use a KWin window rule, see DESKTOP.md); X11/XWayland restore it. A window that opens on no monitor is moved to (64, 64). Before login the window fields are still written, into the previously saved route.
+- UI zoom 80%-150% in 10% steps (Ctrl+= / Ctrl+- / Ctrl+0, Settings > Appearance) through the daemon's `scale_factor`. `Resized` and the scroll area sensor report layout (unscaled) sizes, so grid columns and visible rows follow the zoom; changing zoom keeps the real window size, so `Ui::window_size` is rescaled and the minimum window size is `860x620` times the zoom.
+- Persistent browser destination (kinds `library` = Home, `playlists`, `playlist`, `artist`, `album`, `liked`, `saved-albums`, `search`; every search page restores to the overview of its text, and older files still load)/title/page offset/header art, Settings and queue-panel state, and native window dimensions in the platform config directory (`CustomSpotify/frontend-v1.json`). Strict versioned JSON, 16 KiB read limit, bounded window dimensions, atomic replacement. Invalid data produces a visible error and safe defaults. Backend credentials/settings remain separate.
+- Visible-only artwork: the current player, the page header, cards in the visible grid window (playlists, artists, albums), the Home and search blocks while on screen (`layout::overlaps`; the search top row's heights come from `layout::SearchTop`), track rows, visible sidebar playlist rows and visible queue rows. After each update, `fetch_artwork` derives the wanted URLs from the scroll window, cancels pending requests that scrolled away or became hidden, and keeps at most `ARTWORK_IN_FLIGHT` (6) `Action::Artwork` requests at 160px in flight. Hiding the window cancels everything. Corners are rounded while decoding (artists as circles, covers by `radius_small`), because the tiny-skia renderer ignores image radii; a theme with a different `radius_small` clears the decoded cache. Rendering calls `Ui::artwork_handle(url)`, which only reads the decoded cache and never starts network work. Grid geometry (`layout::grid`, `visible_grid`) is shared by the layout and the request window: cards are at least 170px wide (about 150px covers, five or six columns at 1440px) and stretch to fill each row; the caption is one bold title line and one subdued subtitle line sized from the theme's body and small fonts, so cards end right under their text. Decode limits are unchanged: PNG/JPEG only, encoded 8 MiB ceiling, header dimension check (2048px each axis), decoder allocation limit (24 MiB), thumbnails capped at 160px. The decoded cache is capped at 24 MiB and 256 entries (about 240 thumbnails). Visible entries move to the back of the eviction order, so off-screen art is evicted first. Failed URLs are suppressed silently (bounded list of 64) and show the music-note placeholder instead of a notice.
+- Page header tint (`tint.rs`): while decoding, each cover gets a saturation-weighted average color from a sparse sample grid, cached with its handle. The album, playlist and artist header draws a gradient from that color into the panel surface and continues the fade behind the play actions. The color's saturation is boosted and its lightness clamped (then stepped away from the theme text) until text keeps at least 4.5:1 contrast. Pages without art use a faint accent tint.
+- Text fitting (`measure.rs`): Iced 0.14 text has `Wrapping::None` and clipping but no native ellipsis, so labels are measured with the renderer's own font system (the `iced/advanced` feature, no new dependency) and cut with "…" at the last character that fits. Results are memoized (4096 entries). Header titles pick the largest of five display sizes at which they fit on one line and only ellipsize at the smallest.
+- Design tokens (`theme.rs`, schema version 2): `[colors]` background, surface, surface_raised, surface_hover, border, text, text_subdued, accent, on_accent, error, focus; `[shape]` radius_small, radius_large, border_width, spacing, padding, row_height; `[shadow]` style (`flat`, `soft`, `neumorphic`), offset, blur, strength; `[font_size]` small, body, heading, display; plus `font_family` and `icons`. Version 1 files still load: missing surfaces are blended from surface and text, and sizes use defaults.
+- Widget styles (`styles.rs`) read only those tokens: primary pill, secondary, icon, ghost, list-row and card buttons; root and panel containers; text input, slider, scrollbar and divider. Flat themes draw no shadow, soft themes one drop shadow and neumorphic themes a dark shadow paired with a light highlight. Shadows are emulated around the fixed panels with translucent quads in a margin of `shadow.offset` (the layout gap shrinks by the same amount): Iced's tiny-skia renderer draws its own `Shadow` without the clip mask, so it leaked out of scroll areas and darkened panels further on every partial redraw. Scrolling content (cards, buttons, the header play button) casts no shadow; raised themes give cards a raised surface with a faint rim. Side lists keep their scrollbar in a gutter and fade out at the bottom edge.
+- The solid play/pause glyphs of the round buttons are rasterized per theme in `icons.rs` (Lucide only ships outlines): background-colored on a text-colored circle in the player, on_accent on an accent circle on page headers and cards.
+- Settings lists the built-in default and the bundled `themes/*.toml` (found next to the sources at build time) as swatch cards that apply immediately, plus a custom theme path, account, Client ID, cache budget, Clear cache, Sign out and Quit.
+- Bundled Lucide icon font (`icons.rs`, lucide-static 1.61.0, codepoints checked against its `lucide.css`). `icons = "text"` swaps glyphs for words; `"symbols"` from version 1 means `"lucide"`. No remote icon assets.
+- Theme-safe system families: `sans-serif`, `serif`, `monospace`, applied to visible labels and editable fields. Strict local TOML, 16 KiB bound, token ranges, and minimum 4.5:1 contrast for text, text_subdued, accent, error and focus against every background/surface token, and for on_accent against accent. No arbitrary font files, executable extensions, or remote themes.
+- Closing the window quits through the graceful Quit path (no tray), restored player snapshot, onboarding and Settings. Focused visible playback ticks only; no periodic hidden UI polling.
+- Spotify Connect (`devices.rs`, `view/devices.rs`, backend contract in BACKEND.md): a device button (Lucide `monitor-speaker`) sits between queue and volume in the now-playing bar and turns accent while another device plays (`ConnectState::is_remote`). It opens a 340px popover anchored above the bar's right end, over a click-away layer (`mouse_area` around an `opaque` popover in a `stack`); Esc, an outside click or the button close it, and opening sends `RefreshDevices`. It shows "Current device" (type icon, name in accent, static equalizer glyph), then "Select another device": type icon and name, "This computer" for this app, a click sends `TransferPlayback { play: true }` and closes. Restricted devices and devices without an id are disabled with "Can't play on this device right now"; no other device shows "No other devices found / Open Spotify on another device". A footer shows "Updating every second" (`Polling`) or "Can't reach Spotify Connect" (`Unavailable`, error color); `Live` shows nothing. While another device plays, a 28px accent strip ("Playing on <device>") below the bar opens the same picker.
+- Remote playback reuses the same transport and progress (position plus `observed_at`). The volume slider sends `SetVolume`, which the backend routes to the active device (`SetDeviceVolume` is not needed); a device with `supports_volume == false` gets a disabled mute button, an inert rail and a tooltip, and Ctrl+Up/Down do nothing. To avoid flooding the Web API, a remote device only receives the progress and volume slider values on release (`devices::Held` keeps the value on screen for two seconds while the device catches up); local playback still sends every step. The queue panel lists `connect.queue_preview` as "Next up" without remove buttons, and the track table hides "play next" (both return capability errors on a remote device; add to queue still works). The panel refetches the local queue when playback returns here. The header play button also recognises the playing page from `connect.context_uri` (playlist, album, Liked Songs); when another device plays, a different context rules out a locally remembered one.
+
+## Dependencies
+
+Bundles the Lucide icon font (about 0.9 MB, embedded with `include_bytes!`). Uses existing `iced 0.14` with `tiny-skia`, native window backends, Tokio, `image-without-codecs` and `advanced` (text measurement; it adds no crates); `image 0.25` with only PNG/JPEG; `serde`, `serde_json`, `directories`, `toml`. The `advanced` feature flag is the only manifest change; the lockfile is unchanged.
+
+## Validation
+
+Root formatting, strict Clippy, and tests pass. Regressions cover sidebar isolation, image bounds, stale requests, queue revisions, channel backpressure, account-safe restart, configuration drafts, disconnect exit, and virtualization. The native dark-theme preview was launched and inspected on KDE Wayland. Live Spotify audio and accessibility traversal remain unverified. See `VALIDATION.md` for runtime measurements.
+
+## Remaining boundaries
+
+- Sidebar filtering searches loaded playlists only.
+- Main-view "Previous" steps back 1000 raw rows, so on filtered pages its window can differ slightly from the one shown before "Next".
+- An artist top result has no play button: there is no artist play source.
+- Home fetches 20 saved albums for its shelf; a window wide enough for more columns shows at most 20.
+- Card play buttons appear when the cover (not the whole card) is hovered and always start that context. The header play button knows the playing context only from playback started in this window (or, after a restart, from the current track's album), because the backend state carries no context.
+- Bundled themes are only listed when the source `themes/` directory exists; installed builds use the custom path field.
+- Preferences restore route/page, dimensions, maximized state, zoom and (not on native Wayland) window position, not exact scroll offset. Dragging, edge resizing and double-click maximize need a real window system and were not exercised headlessly. Resize persistence is synchronous and small; decoding is also synchronous but explicitly bounded.
+- The image cache evicts the least recently *visible* entry, not the least recently drawn. Failed images retry after eviction of the bounded failure list or process restart.
+- No minimized event is exposed by the used Iced stream; unfocused windows suppress progress ticks.
+- Connect UI is verified only against the offline fixture (picker rendering in three themes, remote banner, queue preview); clicks, outside-click dismissal, the volume tooltip and live transfer were not exercised, and no real device or account was used. At 1280px with the queue open the top bar clips its window buttons (existing layout limit).
+- Preview measurements do not establish streaming performance. Screen-reader support still needs testing.
+
+## Structure
+
+`mod.rs`: daemon/state transitions/channel bridge and contract tests.
+`navigation.rs`: routes and bounded back/forward history.
+`paging.rs`: page info and bounded, contiguous page appends.
+`layout.rs`: fixed geometry shared by views and artwork visibility (widths, header heights, grid and row windows).
+`sidebar.rs`: independent playlist loading and filtering.
+`search.rs`: the search overview's top result rule.
+`view/mod.rs`: frame, toast, shared text/button helpers and measured `fit` truncation.
+`measure.rs`: measured single-line ellipsizing with a bounded cache.
+`tint.rs`: cover color extraction and the readable header tint.
+`devices.rs`: current/other devices, transfer rules, context URIs and held slider values.
+`shortcuts.rs`: key bindings, the Settings hint list and volume steps.
+`view/devices.rs`: device picker popover and the "Playing on" banner.
+`view/{sidebar,topbar,browse,search,tracklist,player,queue,settings}.rs`: one file per region or page.
+`persistence.rs`: frontend-only versioned preferences.
+`artwork.rs`: request visibility, decode bounds and decoded cache.
+`theme.rs`: strict declarative tokens, version migration, font selection and contrast validation.
+`styles.rs`: widget style closures built from the tokens.
+`icons.rs`: bundled Lucide glyphs and the icon/text label switch.
+
+## Offline native screenshot preview
+
+The example is the **only synthetic backend**: twelve fixture playlists, four artists,
+eight albums, 32 tracks, 30 liked songs, five saved albums, mixed and per-type search
+(name or artist match, bounded to `SEARCH_LIMIT`), a queue and paused player metadata
+run through real bounded domain channels. Artwork requests are answered with gradient PNGs generated in-process
+(rings for artists, a disc for albums, stripes for playlists) from `synthetic://` URLs.
+It starts no Spotify/network, keyring, audio or MPRIS services. The music and
+account are fictitious; controls do not produce audio. Quit replies with QuitReady.
+Run inside an existing graphical session (or a caller-managed test compositor):
+
+```sh
+preview_dir=$(mktemp -d)
+XDG_CONFIG_HOME="$preview_dir/config" XDG_DATA_HOME="$preview_dir/data" \
+  cargo run --offline --example frontend_preview
+# Remove "$preview_dir" after screenshot QA if no longer needed.
+```
+
+Use fresh, absolute temporary XDG paths, not your account's normal directories.
+For headless screenshots, `CS_PREVIEW_ROUTE=home|playlist|album|artist|liked|saved-albums|search|settings|queue`
+seeds the temporary frontend preferences so the window opens on that page. The search route
+opens with the text in `CS_PREVIEW_QUERY` (for example `static` matches every section, `zzz`
+nothing), or on the empty start page when it is unset, and
+`CS_PREVIEW_REMOTE=1` makes the fictitious Kitchen speaker the playing device, `CS_PREVIEW_DEVICES=1` starts with the device picker open (it seeds a `devices` field of the preferences file that the app never writes) and `CS_PREVIEW_SOURCE=polling|unavailable` sets the Connect source footer. `CS_PREVIEW_NOTICE="text"` sends one notice to show the toast, and `CS_PREVIEW_WIDTH`
+sets the window width (default 1280; 900 shows the stacked search top row). A theme path
+may be passed as the first argument.
+The example requires both variables and writes only frontend preferences there;
+it never starts the production backend. Open a playlist, search for an artist,
+then open its album to inspect those layouts.
+
+Persisted dimensions restore independently of account routes. Routes restore only
+after the backend verifies the same account. An unverified startup opens Your
+library and keeps the pending route without overwriting it. Logout and
+identity changes cancel requests and clear account-scoped UI caches. Authoritative
+configuration changes synchronize settings and theme; ordinary player updates do
+not replace an unfinished settings draft.
+
+A disconnected backend or failed Quit displays a checkpoint-not-confirmed warning.
+A subsequent Quit or window close exits explicitly without claiming a successful
+checkpoint. Normal connected shutdown still waits for QuitReady.

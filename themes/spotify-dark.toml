@@ -1,0 +1,39 @@
+# Flat dark theme in the style of the Spotify desktop client.
+version = 2
+font_family = "sans-serif"
+icons = "lucide"
+
+[colors]
+background = "#121212"
+surface = "#181818"
+surface_raised = "#242424"
+surface_hover = "#2A2A2A"
+border = "#3E3E3E"
+text = "#FFFFFF"
+text_subdued = "#B3B3B3"
+accent = "#1ED760"
+on_accent = "#000000"
+error = "#F3727F"
+focus = "#FFFFFF"
+danger_hover = "#E81123"
+on_danger = "#FFFFFF"
+
+[shape]
+radius_small = 6
+radius_large = 8
+border_width = 0
+spacing = 8
+padding = 16
+row_height = 56
+
+[shadow]
+style = "flat"
+offset = 0
+blur = 0
+strength = 0.0
+
+[font_size]
+small = 12
+body = 14
+heading = 24
+display = 40
