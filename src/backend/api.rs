@@ -331,7 +331,10 @@ impl Api {
         response_json(r).await
     }
 
-    /// Fetches one contract page from official Spotify v1 endpoints.
+    /// Fetches one contract page from official Spotify v1 endpoints. Spotify serves at
+    /// most 50 items per request, and 10 per search type in development mode, so a larger
+    /// page is fetched as concurrent upstream pages and joined: the frontend relies on a
+    /// page covering its whole requested range to put it in front of the loaded run.
     pub(crate) async fn fetch(
         &self,
         token: &str,
@@ -342,8 +345,48 @@ impl Api {
         if p.limit == 0 || p.limit > crate::contracts::MAX_PAGE_SIZE {
             return Err(err(ErrorKind::InvalidInput, "invalid page size"));
         }
-        // Spotify serves at most 50 items per page, and 10 per search type in development mode.
-        let page_limit = p.limit.min(50);
+        let step: u16 = if search_root(q).is_some() {
+            SEARCH_LIMIT as u16
+        } else {
+            SOURCE_PAGE as u16
+        };
+        let chunks = (0..p.limit)
+            .step_by(usize::from(step))
+            .map(|start| PageRequest {
+                offset: p.offset + u64::from(start),
+                limit: step.min(p.limit - start),
+            });
+        let mut pages = futures_util::stream::iter(chunks)
+            .map(|chunk| self.fetch_upstream(token, user_id, q, chunk))
+            .buffered(SOURCE_PAGE_CONCURRENCY);
+        let mut data: PageData = match pages.next().await {
+            Some(first) => first?,
+            None => return Err(err(ErrorKind::InvalidInput, "invalid page size")),
+        };
+        while page_continues(&data)
+            && let Some(next) = pages.next().await
+        {
+            if !join_page(&mut data, next?) {
+                break;
+            }
+        }
+        if let (Query::AlbumTracks { album_id }, PageData::Tracks(page)) = (q, &mut data) {
+            // Cosmetic: a failed album lookup still returns the playable track page.
+            if let Ok(album) = self.album(token, album_id).await {
+                attach_album(&mut page.items, &album);
+            }
+        }
+        Ok(data)
+    }
+    /// Fetches one upstream page of at most one request's size.
+    async fn fetch_upstream(
+        &self,
+        token: &str,
+        user_id: &str,
+        q: &Query,
+        p: PageRequest,
+    ) -> Result<PageData, AppError> {
+        let page_limit = p.limit.min(SOURCE_PAGE as u16);
         let search_limit = p.limit.min(SEARCH_LIMIT as u16);
         let (path, kind, limit) = match q {
             Query::OwnPlaylists => ("me/playlists".into(), Kind::Playlists, page_limit),
@@ -402,14 +445,7 @@ impl Api {
                 .map(serde_json::Value::take)
                 .unwrap_or_default();
         }
-        let mut data = map_page(kind, v, p.offset, user_id)?;
-        if let (Query::AlbumTracks { album_id }, PageData::Tracks(page)) = (q, &mut data) {
-            // Cosmetic: a failed album lookup still returns the playable track page.
-            if let Ok(album) = self.album(token, album_id).await {
-                attach_album(&mut page.items, &album);
-            }
-        }
-        Ok(data)
+        map_page(kind, v, p.offset, user_id)
     }
     /// Loads album name, artists and cover for simplified album-track pages.
     async fn album(&self, token: &str, id: &SpotifyId) -> Result<Album, AppError> {
@@ -498,6 +534,38 @@ fn search_path(text: &str, types: &str) -> Result<String, AppError> {
     }
     let q: String = url::form_urlencoded::byte_serialize(text.as_bytes()).collect();
     Ok(format!("search?q={q}&type={types}"))
+}
+
+/// Whether a joined page was full and has more rows after it.
+fn page_continues(data: &PageData) -> bool {
+    match data {
+        PageData::Playlists(p) => p.has_more,
+        PageData::Tracks(p) => p.has_more,
+        PageData::Artists(p) => p.has_more,
+        PageData::Albums(p) => p.has_more,
+        PageData::Queue { .. } | PageData::Search(_) => false,
+    }
+}
+
+/// Append an upstream page that continues `data` at its raw offset; false otherwise.
+fn join_page(data: &mut PageData, next: PageData) -> bool {
+    fn extend<T>(a: &mut Page<T>, b: Page<T>) -> bool {
+        if b.offset != a.next_offset {
+            return false;
+        }
+        a.items.extend(b.items);
+        a.has_more = b.has_more;
+        a.total = b.total.or(a.total);
+        a.next_offset = b.next_offset;
+        true
+    }
+    match (data, next) {
+        (PageData::Playlists(a), PageData::Playlists(b)) => extend(a, b),
+        (PageData::Tracks(a), PageData::Tracks(b)) => extend(a, b),
+        (PageData::Artists(a), PageData::Artists(b)) => extend(a, b),
+        (PageData::Albums(a), PageData::Albums(b)) => extend(a, b),
+        _ => false,
+    }
 }
 
 /// Converts endpoint-specific JSON into contract page data.
@@ -768,6 +836,32 @@ mod tests {
             .collect();
         assert_eq!(positions, [("t0", Some(100)), ("t3", Some(103))]);
         assert_eq!(p.next_offset, 104);
+    }
+
+    /// Regression: a 100-row page joins two upstream pages, so scrolling up can put it
+    /// in front of the loaded run instead of replacing the run with a 50-row page.
+    #[test]
+    fn upstream_pages_join_only_when_contiguous() {
+        let page = |offset: u64, ids: &[&str], next: bool| {
+            let items: Vec<_> = ids
+                .iter()
+                .map(|id| json!({"track": {"id": id, "name": id}}))
+                .collect();
+            let mut v = json!({"items": items, "total": 100});
+            if next {
+                v["next"] = json!("more");
+            }
+            map_page(Kind::Tracks, v, offset, "me").unwrap()
+        };
+        let mut data = page(0, &["a", "b"], true);
+        assert!(page_continues(&data));
+        assert!(!join_page(&mut data, page(5, &["x"], false)));
+        assert!(join_page(&mut data, page(2, &["c"], false)));
+        let PageData::Tracks(p) = &data else {
+            panic!("expected tracks")
+        };
+        assert_eq!((p.items.len(), p.next_offset, p.has_more), (3, 3, false));
+        assert!(!page_continues(&data));
     }
 
     /// Regression: pages continue after every raw row, also when filtering kept none.

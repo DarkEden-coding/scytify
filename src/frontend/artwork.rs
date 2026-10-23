@@ -24,8 +24,8 @@ pub(super) enum Shape {
     Round,
 }
 
-/// Indices of an overscanned row window, those on screen first. The window extends one
-/// viewport above and two below, so the screen starts about a third of the way in.
+/// Indices of an overscanned row window, those on screen first. The window extends about
+/// one viewport above and below, so the screen starts about a third of the way in.
 fn nearest_first(start: usize, end: usize) -> impl Iterator<Item = usize> {
     let focus: usize = start + (end - start) / 3;
     let mut indices: Vec<usize> = (start..end).collect();
