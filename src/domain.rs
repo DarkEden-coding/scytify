@@ -243,6 +243,8 @@ pub struct AppState {
     pub connect: ConnectState,
     pub cache_used_bytes: u64,
     pub cache_limit_bytes: u64,
+    /// A Spicy Lyrics API key is stored; the key itself never leaves the backend.
+    pub lyrics_key_set: bool,
 }
 
 /// Backend validates ranges; default total cache limit is 1_000_000_000 bytes.
@@ -259,4 +261,70 @@ pub struct QueueItem {
     pub entry: QueueEntry,
     pub track: Option<Track>,
     pub explicit: bool,
+}
+
+/// Time-synced lyrics for one track, already normalized from the provider's format.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Lyrics {
+    pub track_id: SpotifyId,
+    pub sync: LyricsSync,
+    pub lines: Vec<LyricsLine>,
+    pub credit: LyricsCredit,
+}
+
+/// How precisely `LyricsLine` timings can be trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LyricsSync {
+    /// Every syllable carries its own timing.
+    Syllable,
+    /// Lines are timed; each line's `lead` is one syllable spanning the whole line.
+    Line,
+    /// No timings: every time is zero and the UI shows plain text.
+    Static,
+}
+
+/// One displayed line. Times are milliseconds from the start of the track.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LyricsLine {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// A second singer's line, drawn on the opposite side.
+    pub opposite: bool,
+    pub lead: Vec<Syllable>,
+    /// Background vocals; empty for line-synced and static lyrics.
+    pub background: Vec<Syllable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Syllable {
+    /// Without surrounding whitespace.
+    pub text: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// The next syllable continues this word, so no space follows.
+    pub joins_next: bool,
+}
+
+/// Attribution the provider's terms require on screen next to the lyrics.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LyricsCredit {
+    pub source: LyricsSource,
+    /// Community syncs only.
+    pub uploader: Option<Contributor>,
+    pub maker: Option<Contributor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LyricsSource {
+    /// A community sync uploaded to Spicy Lyrics.
+    Community,
+    AppleMusic,
+    Spotify,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Contributor {
+    pub name: String,
+    pub url: String,
 }

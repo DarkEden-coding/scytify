@@ -1,7 +1,7 @@
 //! Navigation block and the virtualized "Your Library" playlist list.
 use super::*;
 use crate::frontend::artwork::Shape;
-use crate::frontend::layout::{SIDEBAR_ROW, SIDEBAR_WIDTH, visible_rows};
+use crate::frontend::layout::{SIDEBAR_ROW, visible_rows};
 use iced::widget::column;
 use iced::widget::{scrollable, text_input};
 
@@ -46,7 +46,7 @@ impl Ui {
             p.shape.spacing,
         );
         container(column![container(nav).height(Length::Shrink), library].spacing(self.panel_gap()))
-            .width(SIDEBAR_WIDTH)
+            .width(self.panel_widths().0)
             .height(Length::Fill)
             .into()
     }
@@ -192,7 +192,7 @@ impl Ui {
     ) -> Element<'a> {
         let p: &Palette = &self.palette;
         // Panel padding, row padding, thumbnail, gap and the scrollbar gutter.
-        let text_width: f32 = SIDEBAR_WIDTH
+        let text_width: f32 = self.panel_widths().0
             - 2.0 * (p.shape.spacing + styles::shadow_margin(p))
             - 2.0 * 8.0
             - THUMB

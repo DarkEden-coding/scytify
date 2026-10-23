@@ -1,4 +1,4 @@
-use crate::domain::{SessionSnapshot, Settings};
+use crate::domain::{Lyrics, SessionSnapshot, Settings, SpotifyId};
 use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -26,11 +26,14 @@ impl Storage {
         db.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| e.to_string())?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v BLOB NOT NULL); CREATE TABLE IF NOT EXISTS cache(k TEXT PRIMARY KEY,path TEXT NOT NULL,size INTEGER NOT NULL,atime INTEGER NOT NULL);").map_err(|e| e.to_string())?;
-        Ok(Self {
+        db.execute_batch("CREATE TABLE IF NOT EXISTS lyrics_cache(track_id TEXT PRIMARY KEY, body BLOB NOT NULL, stored_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);").map_err(|e| e.to_string())?;
+        let store = Self {
             root: root.to_owned(),
             db,
             audio_bytes: std::cell::Cell::new(0),
-        })
+        };
+        store.prune_lyrics(now())?;
+        Ok(store)
     }
     /// Loads validated settings, defaulting only when absent and reporting corruption.
     pub(crate) fn settings(&self) -> Result<Settings, String> {
@@ -88,6 +91,57 @@ impl Storage {
             .execute(
                 "INSERT INTO kv(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                 params![k, v],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    pub(crate) fn cached_lyrics(
+        &self,
+        track_id: &SpotifyId,
+    ) -> Result<Option<Option<Lyrics>>, String> {
+        self.cached_lyrics_at(track_id, now())
+    }
+    fn cached_lyrics_at(
+        &self,
+        track_id: &SpotifyId,
+        timestamp: i64,
+    ) -> Result<Option<Option<Lyrics>>, String> {
+        self.prune_lyrics(timestamp)?;
+        self.db
+            .query_row(
+                "SELECT body FROM lyrics_cache WHERE track_id=?1",
+                [&track_id.0],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .map(|body| serde_json::from_slice(&body).map_err(|e| e.to_string()))
+            .transpose()
+    }
+    pub(crate) fn cache_lyrics(
+        &self,
+        track_id: &SpotifyId,
+        lyrics: &Option<Lyrics>,
+    ) -> Result<(), String> {
+        self.cache_lyrics_at(track_id, lyrics, now())
+    }
+    fn cache_lyrics_at(
+        &self,
+        track_id: &SpotifyId,
+        lyrics: &Option<Lyrics>,
+        timestamp: i64,
+    ) -> Result<(), String> {
+        let ttl = if lyrics.is_some() { 30 * 86400 } else { 86400 };
+        let body = serde_json::to_vec(lyrics).map_err(|e| e.to_string())?;
+        self.db.execute("INSERT INTO lyrics_cache(track_id,body,stored_at,expires_at) VALUES(?1,?2,?3,?4) ON CONFLICT(track_id) DO UPDATE SET body=excluded.body,stored_at=excluded.stored_at,expires_at=excluded.expires_at",
+            params![track_id.0, body, timestamp, timestamp.saturating_add(ttl)]).map(|_| ()).map_err(|e| e.to_string())
+    }
+    /// Discard expired content even when those tracks are never requested again.
+    pub(crate) fn prune_lyrics(&self, timestamp: i64) -> Result<(), String> {
+        self.db
+            .execute(
+                "DELETE FROM lyrics_cache WHERE expires_at<=?1 OR stored_at>?1",
+                [timestamp],
             )
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -186,6 +240,9 @@ impl Storage {
         }
         self.audio_bytes.set(0);
         self.db
+            .execute("DELETE FROM lyrics_cache", [])
+            .map_err(|e| e.to_string())?;
+        self.db
             .execute("DELETE FROM cache", [])
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -219,7 +276,7 @@ pub(crate) fn default_settings() -> Settings {
     }
 }
 /// Checks persisted setting ranges and client-ID syntax.
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -237,6 +294,72 @@ fn valid_settings(s: &Settings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lyrics_cache_expires_success_and_missing_entries_and_clear_removes_both() {
+        use crate::domain::{LyricsCredit, LyricsSource, LyricsSync};
+        let root =
+            std::env::temp_dir().join(format!("custom-spotify-lyrics-{}", rand::random::<u64>()));
+        let store = Storage::open_at(&root).unwrap();
+        let track_id = SpotifyId("0123456789012345678901".into());
+        let lyrics = Some(Lyrics {
+            track_id: track_id.clone(),
+            sync: LyricsSync::Static,
+            lines: Vec::new(),
+            credit: LyricsCredit {
+                source: LyricsSource::Spotify,
+                uploader: None,
+                maker: None,
+            },
+        });
+        let timestamp = now();
+        store
+            .cache_lyrics_at(&track_id, &lyrics, timestamp)
+            .unwrap();
+        assert_eq!(
+            store
+                .cached_lyrics_at(&track_id, timestamp + 30 * 86400 - 1)
+                .unwrap(),
+            Some(lyrics.clone())
+        );
+        assert_eq!(
+            store
+                .cached_lyrics_at(&track_id, timestamp + 30 * 86400)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .db
+                .query_row("SELECT COUNT(*) FROM lyrics_cache", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        store.cache_lyrics_at(&track_id, &None, timestamp).unwrap();
+        assert_eq!(
+            store
+                .cached_lyrics_at(&track_id, timestamp + 86400 - 1)
+                .unwrap(),
+            Some(None)
+        );
+        assert_eq!(
+            store
+                .cached_lyrics_at(&track_id, timestamp + 86400)
+                .unwrap(),
+            None
+        );
+        store.cache_lyrics(&track_id, &lyrics).unwrap();
+        drop(store);
+        let store = Storage::open_at(&root).unwrap();
+        assert_eq!(store.cached_lyrics(&track_id).unwrap(), Some(lyrics));
+        store.save_settings(&default_settings()).unwrap();
+        store.clear_cache().unwrap();
+        assert_eq!(store.cached_lyrics(&track_id).unwrap(), None);
+        assert!(store.get_json("settings").unwrap().is_some());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// Audio files count toward usage and are removed with the rest of the cache.
     #[test]

@@ -58,6 +58,8 @@ pub enum Icon {
     Radio,
     /// Equalizer bars next to the playing device (Lucide `audio-lines`).
     Equalizer,
+    /// Lyrics view toggle (Lucide `mic-vocal`).
+    Lyrics,
 }
 
 impl Icon {
@@ -103,6 +105,7 @@ impl Icon {
             Icon::Laptop => '\u{e1cd}',
             Icon::Radio => '\u{e142}',
             Icon::Equalizer => '\u{e55a}',
+            Icon::Lyrics => '\u{e349}',
         }
     }
 
@@ -146,6 +149,7 @@ impl Icon {
             Icon::Laptop => "Computer",
             Icon::Radio => "Device",
             Icon::Equalizer => "Playing",
+            Icon::Lyrics => "Lyrics",
         }
     }
 }

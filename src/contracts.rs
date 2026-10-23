@@ -154,6 +154,12 @@ pub enum Action {
         edge_px: u16,
     },
     SetVisible(bool),
+    /// Synced lyrics for one track. Answers `Response::Lyrics`, cached on disk.
+    Lyrics {
+        track_id: SpotifyId,
+    },
+    /// Store (Some) or forget (None) the Spicy Lyrics API key in the Secret Service.
+    SetLyricsKey(Option<String>),
     Quit,
 }
 
@@ -192,6 +198,8 @@ pub enum Response {
     Artwork {
         bytes: Vec<u8>,
     },
+    /// `None` when the provider has no lyrics for the track.
+    Lyrics(Option<Lyrics>),
 }
 
 #[derive(Clone, Debug)]

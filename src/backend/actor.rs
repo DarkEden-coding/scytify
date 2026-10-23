@@ -1,4 +1,4 @@
-use super::{api, auth, playback, playback_auth, queue::Queue, storage};
+use super::{api, auth, lyrics, playback, playback_auth, queue::Queue, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -16,6 +16,7 @@ pub(super) enum Job {
     Refresh(u64, Result<(auth::Tokens, String), AppError>),
     Response(RequestId, Result<Response, AppError>),
     Artwork(RequestId, String, Result<Vec<u8>, AppError>),
+    Lyrics(RequestId, SpotifyId, Result<Option<Lyrics>, AppError>),
     QueuePage(
         RequestId,
         u64,
@@ -72,7 +73,9 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     };
     let api = api::Api::new()?;
     let mut tokens = auth::Vault::load().map_err(|e| safe(ErrorKind::CredentialStore, &e))?;
+    let mut lyrics = lyrics::Client::new(lyrics::Client::load_key()?)?;
     let mut state = super::initial_state();
+    state.lyrics_key_set = lyrics.has_key();
     state.settings = settings.clone();
     state.cache_limit_bytes = settings.cache_limit_bytes;
     store.measure_audio();
@@ -187,7 +190,15 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     polling = super::remote::Polling::new();
                     state.connect = ConnectState::default();
                 }
-                let result = super::commands::handle_command(command.action, id, auth_epoch, &api, &store, &mut q, &mut state,
+                // Pause freezes the extrapolated position; Seek replaces it in the
+                // synchronous command handler. Both need a fresh, matching instant.
+                if !state.connect.is_remote()
+                    && player.as_ref().is_some_and(|p| p.connect.is_none())
+                    && matches!(command.action, Action::Pause | Action::Seek { .. } | Action::TransferPlayback { .. }) {
+                    playback::advance_anchor(&mut state.player, std::time::Instant::now());
+                    q.snapshot.position_ms = state.player.position_ms;
+                }
+                let result = super::commands::handle_command(command.action, id, auth_epoch, &api, &mut lyrics, &store, &mut q, &mut state,
                     &mut tokens, &mut player, &mut player_events, &metadata, &mut jobs, &mut art_jobs, &mut handles, &mut cancelled, &mut login_ids, &port.events);
                 if let Some(result) = result { emit(&port.events, Event::Completed { id, result }); }
                 if persist { checkpoint(&store, &q, &port.events); }
@@ -254,6 +265,9 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                 }
             }
             _ = refresh_tick.tick() => {
+                if let Err(error) = store.prune_lyrics(storage::now()) {
+                    emit(&port.events, Event::Notice(safe(ErrorKind::Internal, &error)));
+                }
                 if background_auth.is_none() && jobs.len() < 4
                     && let (Some(t), Some(cid)) = (tokens.clone().filter(auth::expiring), state.settings.client_id.clone()) {
                         let a=api.clone(); let epoch=auth_epoch;
@@ -504,6 +518,30 @@ fn finish_job(
             if !cancelled.remove(&id) {
                 emit(events, Event::Completed { id, result: r });
             }
+        }
+        Job::Lyrics(id, track_id, result) => {
+            handles.remove(&id);
+            if cancelled.remove(&id) {
+                return;
+            }
+            if let Ok(lyrics) = &result
+                && let Err(error) = store.cache_lyrics(&track_id, lyrics)
+            {
+                emit(
+                    events,
+                    Event::Notice(safe(
+                        ErrorKind::Internal,
+                        &format!("could not cache lyrics: {error}"),
+                    )),
+                );
+            }
+            emit(
+                events,
+                Event::Completed {
+                    id,
+                    result: result.map(Response::Lyrics),
+                },
+            );
         }
         Job::Artwork(id, key, r) => {
             handles.remove(&id);
@@ -1074,69 +1112,28 @@ fn handle_player_event(
     metadata: &HashMap<SpotifyId, Track>,
     events: &tokio::sync::mpsc::Sender<Event>,
 ) -> bool {
+    // Drain timestamp metadata and update the generation gate even while remote.
+    let Some((update, observed_at)) = player.and_then(|p| p.update(event)) else {
+        return false;
+    };
     if state.connect.is_remote() {
         return false;
     }
-    if let Some(player) = player.filter(|p| p.connect.is_some()) {
-        // Spirc owns load generations and queue advancement. Decoder events provide
-        // precise local anchors without feeding terminal events into the fallback queue.
-        if let Some(update) = player.update(event) {
-            match update {
-                playback::Update::Loading(ms) => {
-                    state.player.status = PlaybackStatus::Loading;
-                    state.player.position_ms = ms;
-                }
-                playback::Update::Playing(ms) => {
-                    state.player.status = PlaybackStatus::Playing;
-                    state.player.position_ms = ms;
-                }
-                playback::Update::Paused(ms) => {
-                    state.player.status = PlaybackStatus::Paused;
-                    state.player.position_ms = ms;
-                }
-                playback::Update::Position(ms) => state.player.position_ms = ms,
-                playback::Update::Seeked(ms) => {
-                    state.player.position_ms = ms;
-                    state.player.seek_revision = state.player.seek_revision.wrapping_add(1);
-                }
-                playback::Update::End | playback::Update::Unavailable => return false,
-            }
-            state.player.observed_at = std::time::Instant::now();
-            if q.snapshot.current.as_ref().map(|e| &e.track_id)
-                == state.player.current.as_ref().map(|t| &t.id)
-            {
-                q.snapshot.position_ms = state.player.position_ms;
-            }
-        }
+    // Events queued before a local command must not undo its immediate anchor.
+    if observed_at < state.player.observed_at {
         return false;
     }
-    let Some(update) = player.and_then(|p| p.update(event)) else {
+    if playback::apply_anchor(&mut state.player, &update, observed_at) {
+        q.snapshot.position_ms = state.player.position_ms;
         return false;
-    };
+    }
+    // Spirc owns queue advancement; only the fallback queue handles terminal events.
+    if player.is_some_and(|p| p.connect.is_some()) {
+        return false;
+    }
     let mut queue_dirty = false;
-    match Some(update) {
-        Some(playback::Update::Loading(ms)) => {
-            state.player.status = PlaybackStatus::Loading;
-            state.player.position_ms = ms
-        }
-        Some(playback::Update::Playing(ms)) => {
-            state.player.status = PlaybackStatus::Playing;
-            state.player.position_ms = ms
-        }
-        Some(playback::Update::Paused(ms)) => {
-            state.player.status = PlaybackStatus::Paused;
-            state.player.position_ms = ms
-        }
-        Some(playback::Update::Position(ms)) => {
-            q.snapshot.position_ms = ms;
-            state.player.position_ms = ms
-        }
-        Some(playback::Update::Seeked(ms)) => {
-            q.snapshot.position_ms = ms;
-            state.player.position_ms = ms;
-            state.player.seek_revision = state.player.seek_revision.wrapping_add(1);
-        }
-        Some(playback::Update::End) => {
+    match update {
+        playback::Update::End => {
             queue_dirty = true;
             q.next(true);
             sync_queue(state, q);
@@ -1148,13 +1145,16 @@ fn handle_player_event(
                 .cloned();
             if let Some(p) = player {
                 if let Some(e) = q.snapshot.current.as_ref() {
+                    state.player.position_ms = 0;
+                    state.player.status = PlaybackStatus::Loading;
+                    state.player.observed_at = observed_at;
                     let _ = p.load(&e.track_id, 0, true);
                 } else {
                     state.player.status = PlaybackStatus::Stopped;
                 }
             }
         }
-        Some(playback::Update::Unavailable) => {
+        playback::Update::Unavailable => {
             queue_dirty = true;
             emit(
                 events,
@@ -1172,22 +1172,25 @@ fn handle_player_event(
                 .and_then(|e| metadata.get(&e.track_id))
                 .cloned();
             if let (Some(p), Some(e)) = (player, q.snapshot.current.as_ref()) {
+                state.player.position_ms = 0;
+                state.player.status = PlaybackStatus::Loading;
+                state.player.observed_at = observed_at;
                 let _ = p.load(&e.track_id, 0, true);
+            } else {
+                state.player.status = PlaybackStatus::Stopped;
             }
         }
-        None => {}
+        _ => {}
     }
-    state.player.observed_at = std::time::Instant::now();
     queue_dirty
 }
 
-/// Copies queue anchors into observable state and increments its revision.
+/// Copies queue membership/options without changing the playback position anchor.
 pub(super) fn sync_queue(s: &mut AppState, q: &Queue) {
     s.player.current_entry_id = q.snapshot.current.as_ref().map(|x| x.entry_id);
     s.player.shuffle = q.snapshot.shuffle;
     s.player.repeat = q.snapshot.repeat;
     s.player.queue_revision = s.player.queue_revision.wrapping_add(1);
-    s.player.observed_at = std::time::Instant::now()
 }
 /// Persists queue state and emits an actionable notice on failure.
 fn checkpoint(store: &storage::Storage, q: &Queue, events: &tokio::sync::mpsc::Sender<Event>) {
@@ -1533,5 +1536,28 @@ mod regression_tests {
             c.position_update_interval,
             Some(std::time::Duration::from_secs(1))
         );
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn queue_options_and_membership_preserve_the_position_anchor() {
+        let mut state = super::super::initial_state();
+        let mut queue = Queue::empty(1);
+        let observed_at = Instant::now();
+        let later = observed_at + Duration::from_millis(875);
+        state.player.status = PlaybackStatus::Playing;
+        state.player.position_ms = 12_000;
+        state.player.observed_at = observed_at;
+        queue.set_shuffle(true);
+        sync_queue(&mut state, &queue);
+        assert!(state.player.shuffle);
+        assert_eq!(state.player.position_ms, 12_000);
+        assert_eq!(state.player.observed_at, observed_at);
+        assert_eq!(playback::position_at(&state.player, later), 12_875);
     }
 }

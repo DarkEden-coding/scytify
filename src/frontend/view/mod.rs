@@ -2,6 +2,7 @@
 //! Sizes come from `layout` and the theme tokens; colors only from the theme.
 mod browse;
 mod devices;
+mod lyrics;
 mod player;
 mod queue;
 mod search;
@@ -22,6 +23,8 @@ use iced::{Alignment, Length};
 const PLAYER_HEIGHT: f32 = 80.0;
 /// Space between a notice and the player bar below it.
 const TOAST_GAP: f32 = 12.0;
+/// Width of the grab area over a panel gap.
+const SPLIT_GRIP: f32 = 8.0;
 
 /// Make wheel ticks over a scrollable glide instead of stepping.
 fn smooth_wheel<'a>(scroll: impl Into<Element<'a>>, area: Area) -> Element<'a> {
@@ -41,6 +44,8 @@ impl Ui {
             .height(Length::Fill);
         if self.queue {
             body = body.push(self.queue_view());
+        } else if self.lyrics_open {
+            body = body.push(self.lyrics_view());
         }
         let edge: f32 = self.frame_edge();
         let frame = container(
@@ -54,7 +59,7 @@ impl Ui {
         if let Some(banner) = self.connect_banner() {
             window = window.push(banner);
         }
-        let mut layers = stack![window];
+        let mut layers = stack![window, self.split_handles()];
         if !self.notice.is_empty() {
             // Centered over the whole window, floating just above the player bar.
             layers = layers.push(
@@ -80,6 +85,34 @@ impl Ui {
             self.browser_view()
         };
         self.panel(column![self.top_bar(), page].height(Length::Fill), 0.0)
+    }
+
+    /// Invisible grips over the gaps between panels that resize them when dragged.
+    fn split_handles(&self) -> Element<'_> {
+        let edge: f32 = self.frame_edge();
+        let gap: f32 = self.panel_gap();
+        let margin: f32 = styles::shadow_margin(&self.palette);
+        let (sidebar, right) = self.panel_widths();
+        let grip = |handle| -> Element<'_> {
+            iced::widget::mouse_area(space().width(SPLIT_GRIP).height(Length::Fill))
+                .on_press(Message::SplitStart(handle))
+                .interaction(iced::mouse::Interaction::ResizingHorizontally)
+                .into()
+        };
+        let mut handles = row![
+            space().width(edge + sidebar + gap / 2.0 - SPLIT_GRIP / 2.0),
+            grip(splits::Handle::Sidebar),
+            space().width(Length::Fill),
+        ];
+        if self.right_panel().is_some() {
+            handles = handles
+                .push(grip(splits::Handle::Right))
+                .push(space().width(edge + right + gap / 2.0 + 2.0 * margin - SPLIT_GRIP / 2.0));
+        }
+        container(handles)
+            .height(Length::Fill)
+            .padding(iced::Padding::new(edge).bottom(PLAYER_HEIGHT + edge))
+            .into()
     }
 
     /// Dismissible notice for errors and warnings.

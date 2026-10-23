@@ -15,17 +15,7 @@ impl Ui {
         let p: &Palette = &self.palette;
         let player: &PlayerState = &self.state.player;
         let duration: u64 = player.current.as_ref().map(|t| t.duration_ms).unwrap_or(0);
-        let position: u64 = (player.position_ms
-            + if player.status == PlaybackStatus::Playing {
-                player
-                    .observed_at
-                    .elapsed()
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64
-            } else {
-                0
-            })
-        .min(duration);
+        let position: u64 = self.position_ms();
         let position: u64 = self
             .seek_hold
             .and_then(|held| held.shown())
@@ -81,6 +71,7 @@ impl Ui {
             .align_x(Alignment::Center)
             .max_width(640);
         let output = row![
+            self.icon_button(Icon::Lyrics, 18.0, self.lyrics_open, Message::Lyrics),
             self.icon_button(Icon::ListMusic, 18.0, self.queue, Message::Queue),
             self.devices_button(),
             self.volume_controls(),

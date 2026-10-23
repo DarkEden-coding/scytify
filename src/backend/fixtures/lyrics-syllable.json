@@ -1,0 +1,97 @@
+{
+  "Status": 200,
+  "Type": "object",
+  "Body": {
+    "Type": "Syllable",
+    "SongWriters": [
+      "Carter De Filippis",
+      "GRAYSKIES"
+    ],
+    "StartTime": 5.698,
+    "Content": [
+      {
+        "Type": "Vocal",
+        "OppositeAligned": true,
+        "Lead": {
+          "Syllables": [
+            {
+              "Text": "Hel",
+              "IsPartOfWord": true,
+              "StartTime": 5.698,
+              "EndTime": 5.884
+            },
+            {
+              "Text": "lo",
+              "IsPartOfWord": false,
+              "StartTime": 5.884,
+              "EndTime": 6.058
+            }
+          ],
+          "StartTime": 5.698,
+          "EndTime": 8.263
+        },
+        "Background": [
+          {
+            "StartTime": 5.7,
+            "EndTime": 5.9,
+            "Syllables": [
+              {
+                "Text": " oh ",
+                "StartTime": 5.7006,
+                "EndTime": 5.8994,
+                "IsPartOfWord": false
+              }
+            ]
+          },
+          {
+            "StartTime": 6,
+            "EndTime": 6.2,
+            "Syllables": [
+              {
+                "Text": "yeah",
+                "StartTime": 6,
+                "EndTime": 6.2,
+                "IsPartOfWord": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "Type": "Vocal",
+        "OppositeAligned": false,
+        "Lead": {
+          "StartTime": 9,
+          "EndTime": 10,
+          "Syllables": [
+            {
+              "Text": "   ",
+              "StartTime": 9,
+              "EndTime": 10,
+              "IsPartOfWord": false
+            }
+          ]
+        }
+      }
+    ],
+    "EndTime": 138.055,
+    "id": "0123456789012345678901",
+    "source": "spicy_lyrics",
+    "Language": "eng",
+    "LanguageISO2": "en",
+    "HasTransliterations": false,
+    "uri": "spotify:track:1N8TTK1Uoy7UvQNUazfUt5",
+    "UploadAttribution": {
+      "Uploader": {
+        "id": "1",
+        "username": "Uploader",
+        "url": "https://spicylyrics.org/u/uploader"
+      },
+      "Maker": {
+        "id": "2",
+        "username": "Maker",
+        "url": "https://spicylyrics.org/u/maker"
+      }
+    }
+  }
+}

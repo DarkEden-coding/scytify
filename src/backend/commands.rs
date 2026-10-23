@@ -1,5 +1,5 @@
 use super::actor::{Job, artwork, emit, load_current, login_ready, safe, sync_queue};
-use super::{api, auth, playback, playback_auth, queue::Queue, storage};
+use super::{api, auth, lyrics, playback, playback_auth, queue::Queue, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -15,6 +15,7 @@ pub(super) fn handle_command(
     id: RequestId,
     auth_epoch: u64,
     api: &api::Api,
+    lyrics: &mut lyrics::Client,
     store: &storage::Storage,
     q: &mut Queue,
     state: &mut AppState,
@@ -156,6 +157,30 @@ pub(super) fn handle_command(
         return Some(play_with_connect(source, store, q, state, player, metadata));
     }
     match action {
+        Action::SetLyricsKey(key) => Some(lyrics.set_key(key).map(|()| {
+            state.lyrics_key_set = lyrics.has_key();
+            Response::Accepted
+        })),
+        Action::Lyrics { track_id } => {
+            let request = match lyrics.request(&track_id) {
+                Ok(request) => request,
+                Err(error) => return Some(Err(error)),
+            };
+            match store.cached_lyrics(&track_id) {
+                Ok(Some(cached)) => return Some(Ok(Response::Lyrics(cached))),
+                Ok(None) => (),
+                Err(error) => return Some(Err(safe(ErrorKind::Internal, &error))),
+            }
+            if jobs.len() >= 4 {
+                return Some(Err(safe(ErrorKind::Unavailable, "backend is busy")));
+            }
+            let h = jobs.spawn(async move {
+                let result = lyrics::fetch(request, &track_id).await;
+                Job::Lyrics(id, track_id, result)
+            });
+            handles.insert(id, h);
+            None
+        }
         Action::Configure(s) => match store.save_settings(&s) {
             Err(e) => Some(Err(safe(ErrorKind::InvalidInput, &e))),
             Ok(()) => {
@@ -671,11 +696,123 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn lyrics_dispatch_requires_its_key_serves_signed_out_cache_and_cancels_jobs() {
+        let root = std::env::temp_dir().join(format!(
+            "custom-spotify-lyrics-dispatch-{}",
+            rand::random::<u64>()
+        ));
+        let store = storage::Storage::open_at(&root).unwrap();
+        let api = api::Api::new().unwrap();
+        let track_id = SpotifyId("0123456789012345678901".into());
+        store.cache_lyrics(&track_id, &None).unwrap();
+        for key in [None, Some("sl_sk_unused_test_key".into())] {
+            let has_key = key.is_some();
+            let mut lyrics = lyrics::Client::new(key).unwrap();
+            let mut queue = Queue::empty(1);
+            let mut state = crate::backend::initial_state();
+            let mut tokens = None;
+            let mut player = None;
+            let mut player_events = None;
+            let metadata = HashMap::new();
+            let mut jobs = JoinSet::new();
+            let mut art_jobs = JoinSet::new();
+            let mut handles = HashMap::new();
+            let mut cancelled = HashSet::new();
+            let mut login_ids = HashSet::new();
+            let (events, mut receiver) = tokio::sync::mpsc::channel(8);
+            macro_rules! dispatch {
+                ($action:expr, $id:expr) => {
+                    handle_command(
+                        $action,
+                        RequestId($id),
+                        0,
+                        &api,
+                        &mut lyrics,
+                        &store,
+                        &mut queue,
+                        &mut state,
+                        &mut tokens,
+                        &mut player,
+                        &mut player_events,
+                        &metadata,
+                        &mut jobs,
+                        &mut art_jobs,
+                        &mut handles,
+                        &mut cancelled,
+                        &mut login_ids,
+                        &events,
+                    )
+                };
+            }
+            let result = dispatch!(
+                Action::Lyrics {
+                    track_id: track_id.clone()
+                },
+                1
+            );
+            if has_key {
+                assert!(matches!(result, Some(Ok(Response::Lyrics(None)))));
+            } else {
+                assert!(matches!(
+                    result,
+                    Some(Err(AppError {
+                        kind: ErrorKind::Authentication,
+                        ..
+                    }))
+                ));
+            }
+            assert!(jobs.is_empty());
+            assert!(handles.is_empty());
+            let invalid_key = dispatch!(Action::SetLyricsKey(Some("invalid key".into())), 2);
+            assert!(matches!(
+                invalid_key,
+                Some(Err(AppError {
+                    kind: ErrorKind::InvalidInput,
+                    ..
+                }))
+            ));
+            if has_key {
+                // A current-thread runtime cannot poll the request between spawn and abort.
+                store.clear_cache().unwrap();
+                assert!(
+                    dispatch!(
+                        Action::Lyrics {
+                            track_id: track_id.clone()
+                        },
+                        3
+                    )
+                    .is_none()
+                );
+                assert!(handles.contains_key(&RequestId(3)));
+                assert!(matches!(
+                    dispatch!(Action::CancelRequest(RequestId(3)), 4),
+                    Some(Ok(Response::Accepted))
+                ));
+                assert!(handles.is_empty());
+                assert!(cancelled.contains(&RequestId(3)));
+                assert!(
+                    matches!(jobs.join_next().await.unwrap(), Err(error) if error.is_cancelled())
+                );
+                assert!(matches!(
+                    receiver.recv().await,
+                    Some(Event::Completed {
+                        id: RequestId(3),
+                        result: Err(_)
+                    })
+                ));
+            }
+        }
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn connect_queue_edits_never_mutate_the_local_fallback_queue() {
         let root =
             std::env::temp_dir().join(format!("custom-spotify-routing-{}", rand::random::<u64>()));
         let store = storage::Storage::open_at(&root).unwrap();
         let api = api::Api::new().unwrap();
+        let mut lyrics = lyrics::Client::new(None).unwrap();
         let mut queue = Queue::empty(1);
         let mut state = crate::backend::initial_state();
         state.connect.this_device_id = Some("this-app".into());
@@ -700,6 +837,7 @@ mod tests {
                 RequestId(1),
                 0,
                 &api,
+                &mut lyrics,
                 &store,
                 &mut queue,
                 &mut state,

@@ -19,6 +19,12 @@ pub(super) struct Preferences {
     /// Settings shown over the route, and the queue panel; absent in older files.
     settings: bool,
     queue: bool,
+    /// The lyrics panel is open (instead of the queue); absent in older files.
+    lyrics: bool,
+    /// Dragged panel widths; 0 (absent in older files) means the default.
+    sidebar_width: f32,
+    queue_width: f32,
+    lyrics_width: f32,
     /// Open the device picker on start. Only the offline preview writes it; never saved.
     devices: bool,
     /// Header art of the route, so a restored artist page keeps its picture.
@@ -157,6 +163,7 @@ impl Preferences {
             ui.open_settings();
         }
         ui.settings = self.settings;
+        ui.lyrics_open = self.lyrics && !self.queue;
     }
 
     /// Restore window geometry, zoom and title bar choice before the window opens.
@@ -169,6 +176,14 @@ impl Preferences {
         ui.position = ui.restore_position;
         ui.maximized = self.maximized;
         ui.zoom = chrome::clamp_zoom(self.zoom);
+        let d = splits::Splits::default();
+        let stored = |width: f32, default: f32| if width == 0.0 { default } else { width };
+        ui.splits = splits::Splits {
+            sidebar: stored(self.sidebar_width, d.sidebar),
+            queue: stored(self.queue_width, d.queue),
+            lyrics: stored(self.lyrics_width, d.lyrics),
+        }
+        .sanitized();
         ui.system_title_bar = self.system_title_bar;
     }
 
@@ -219,6 +234,7 @@ impl Preferences {
             offset: ui.offset,
             settings: ui.settings,
             queue: ui.queue,
+            lyrics: ui.lyrics_open,
             artwork: ui.route_artwork.clone(),
             ..Self::default()
         };
@@ -235,6 +251,9 @@ impl Preferences {
         self.maximized = ui.maximized;
         self.zoom = ui.zoom;
         self.system_title_bar = ui.system_title_bar;
+        self.sidebar_width = ui.splits.sidebar;
+        self.queue_width = ui.splits.queue;
+        self.lyrics_width = ui.splits.lyrics;
     }
 
     /// Write the file through a temporary sibling so a crash never leaves it half-written.

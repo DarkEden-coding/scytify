@@ -10,6 +10,39 @@ const KEYS_WIDTH: f32 = 140.0;
 
 impl Ui {
     /// Edit a full configuration based on authoritative state, preserving untouched fields.
+    /// Spicy Lyrics key entry; the saved key is never shown again.
+    fn lyrics_key_field(&self) -> Element<'_> {
+        let p: &Palette = &self.palette;
+        let placeholder: &str = if self.state.lyrics_key_set {
+            "Replace the saved key"
+        } else {
+            "sl_sk_…"
+        };
+        let mut actions = row![self.control(self.label("Save key")).on_press_maybe(
+            (!self.lyrics_key.trim().is_empty()).then_some(Message::SaveLyricsKey)
+        )]
+        .spacing(p.shape.spacing);
+        if self.state.lyrics_key_set {
+            actions = actions.push(
+                self.control(self.label("Remove key"))
+                    .on_press(Message::RemoveLyricsKey),
+            );
+        }
+        row![
+            self.field(
+                "Spicy Lyrics API key",
+                text_input(placeholder, &self.lyrics_key)
+                    .secure(true)
+                    .on_input(Message::LyricsKey)
+                    .on_submit(Message::SaveLyricsKey),
+            ),
+            actions,
+        ]
+        .spacing(p.shape.spacing * 2.0)
+        .align_y(Alignment::End)
+        .into()
+    }
+
     pub(super) fn settings_view(&self) -> Element<'_> {
         let p: &Palette = &self.palette;
         let account: String = match &self.state.auth {
@@ -76,6 +109,15 @@ impl Ui {
                         .on_input(Message::Client)
                         .on_submit(Message::Save),
                 ),
+            ),
+            self.setting_section(
+                "Lyrics",
+                if self.state.lyrics_key_set {
+                    "Synced lyrics come from Spicy Lyrics. A key is saved in your system keyring."
+                } else {
+                    "Synced lyrics come from Spicy Lyrics. Create a free API key at developers.spicylyrics.org; it is kept in your system keyring."
+                },
+                self.lyrics_key_field(),
             ),
             self.setting_section(
                 "Storage",

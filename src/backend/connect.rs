@@ -192,6 +192,7 @@ pub(super) fn device_name() -> String {
 }
 
 fn parse_cluster(cluster: &librespot_protocol::connect::Cluster) -> Observation {
+    let observed_at = Instant::now();
     let player = &cluster.player_state;
     let devices: Vec<_> = cluster
         .device
@@ -249,7 +250,7 @@ fn parse_cluster(cluster: &librespot_protocol::connect::Cluster) -> Observation 
     } else {
         now_ms
     };
-    let elapsed = if status == PlaybackStatus::Playing {
+    let elapsed = if status == PlaybackStatus::Playing && player.timestamp > 0 {
         server_ms.saturating_sub(player.timestamp).max(0) as u64
     } else {
         0
@@ -263,7 +264,7 @@ fn parse_cluster(cluster: &librespot_protocol::connect::Cluster) -> Observation 
         active,
         track,
         position_ms: (player.position_as_of_timestamp.max(0) as u64).saturating_add(elapsed),
-        observed_at: Instant::now(),
+        observed_at,
         status,
         shuffle: player.options.shuffling_context,
         repeat: if player.options.repeating_track {
@@ -386,6 +387,8 @@ mod tests {
         assert_eq!(observation.repeat, RepeatMode::Queue);
         assert_eq!(observation.queue.unwrap().len(), 2);
         assert_eq!(observation.active.unwrap().id.as_deref(), Some("phone"));
+        cluster.player_state.mut_or_insert_default().timestamp = 0;
+        assert_eq!(parse_cluster(&cluster).position_ms, 3000);
         cluster.player_state.mut_or_insert_default().is_paused = true;
         cluster.player_state.mut_or_insert_default().is_buffering = true;
         assert_eq!(parse_cluster(&cluster).status, PlaybackStatus::Paused);

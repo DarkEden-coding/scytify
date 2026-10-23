@@ -5,6 +5,7 @@ mod devices;
 mod executor;
 mod icons;
 mod layout;
+mod lyrics;
 mod measure;
 mod navigation;
 mod paging;
@@ -14,6 +15,7 @@ mod search;
 mod shortcuts;
 mod sidebar;
 mod smooth_scroll;
+mod splits;
 mod styles;
 pub mod theme;
 mod tint;
@@ -119,6 +121,22 @@ enum Message {
     Maximized(bool),
     SetZoom(f32),
     SystemTitleBar(bool),
+    /// Show or hide the lyrics of the playing track in the main panel.
+    Lyrics,
+    /// Animation frame while lyrics are shown during playback.
+    LyricsFrame(std::time::Instant),
+    LyricsResized(iced::Size),
+    LyricsRetry,
+    /// Settings draft of the Spicy Lyrics API key, and saving or removing it.
+    LyricsKey(String),
+    SaveLyricsKey,
+    RemoveLyricsKey,
+    /// Open an https link from the lyrics credits in the browser.
+    OpenLink(String),
+    /// A panel boundary was grabbed, the cursor moved to x while dragging it, or released.
+    SplitStart(splits::Handle),
+    SplitMove(f32),
+    SplitEnd,
 }
 
 /// A bundled theme offered in Settings; `path` is `None` for the built-in default.
@@ -221,6 +239,14 @@ struct Ui {
     play_context: Option<Query>,
     /// Measured, ellipsized labels.
     fits: measure::FitCache,
+    /// The right panel shows the playing track's lyrics; exclusive with the queue.
+    lyrics_open: bool,
+    /// Preferred panel widths and the boundary being dragged.
+    splits: splits::Splits,
+    split_drag: Option<splits::Drag>,
+    lyrics: lyrics::Panel,
+    /// Unsaved key typed in Settings; cleared once sent.
+    lyrics_key: String,
 }
 /// Run the native daemon on the main thread. Receivers are consumed once by a persistent task.
 pub fn run(port: FrontendPort) -> iced::Result {
@@ -345,6 +371,11 @@ impl Ui {
             themes: Vec::new(),
             play_context: None,
             fits: Default::default(),
+            lyrics_open: false,
+            splits: Default::default(),
+            split_drag: None,
+            lyrics: Default::default(),
+            lyrics_key: String::new(),
         };
         match persistence::Preferences::load() {
             Ok(p) => {
@@ -696,6 +727,69 @@ impl Ui {
         self.history.push(current);
         self.go(route);
     }
+    /// Playback position now: the anchor extrapolated while playing, clamped to the track.
+    fn position_ms(&self) -> u64 {
+        let player: &PlayerState = &self.state.player;
+        let duration: u64 = player.current.as_ref().map_or(0, |t| t.duration_ms);
+        let elapsed: u64 = if player.status == PlaybackStatus::Playing {
+            player
+                .observed_at
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        } else {
+            0
+        };
+        (player.position_ms + elapsed).min(duration)
+    }
+    /// Request the playing track's lyrics while the lyrics view is open.
+    fn sync_lyrics(&mut self) -> Task<Message> {
+        if !self.lyrics_open {
+            return Task::none();
+        }
+        let track: Option<SpotifyId> = self.state.player.current.as_ref().map(|t| t.id.clone());
+        // Waiting for a key, or a send the busy backend refused: try again once possible.
+        let unasked: bool = self.lyrics.status.is_none() && self.state.lyrics_key_set;
+        if track != self.lyrics.track || unasked {
+            if let Some(id) = self.lyrics.loading() {
+                self.send(Action::CancelRequest(id));
+            }
+            let status: Option<lyrics::Status> = match &track {
+                Some(track_id) if self.state.lyrics_key_set => self
+                    .send(Action::Lyrics {
+                        track_id: track_id.clone(),
+                    })
+                    .map(lyrics::Status::Loading),
+                _ => None,
+            };
+            self.lyrics.reset(track, status);
+            if self.window.is_some() {
+                self.glide.cancel(smooth_scroll::Area::Lyrics);
+                return iced::widget::operation::snap_to(
+                    smooth_scroll::Area::Lyrics.id(),
+                    iced::widget::operation::RelativeOffset::START,
+                );
+            }
+        }
+        self.follow_lyrics();
+        Task::none()
+    }
+    /// Glide the lyrics view to the sung line when it changed.
+    fn follow_lyrics(&mut self) {
+        if !self.lyrics_open {
+            return;
+        }
+        let font: iced::Font = self.palette.bold_font();
+        let position: u64 = self.position_ms();
+        if let Some(y) = self
+            .lyrics
+            .follow(position, std::time::Instant::now(), |l, size| {
+                lyrics::tops(&l.lines, size, font)
+            })
+        {
+            self.glide.ease_to(smooth_scroll::Area::Lyrics, y);
+        }
+    }
     /// Show a route; the page is only refetched when its query changes.
     fn go(&mut self, route: Route) {
         if route.settings && !self.settings {
@@ -871,6 +965,8 @@ impl Ui {
                     self.queue_offset = 0;
                     self.fetch_queue();
                 }
+                // After restored preferences, which may reopen the lyrics view.
+                return self.sync_lyrics();
             }
             Message::Backend(Event::QuitReady) => return iced::exit(),
             Message::Backend(Event::ShowWindow) => {
@@ -894,6 +990,17 @@ impl Ui {
             }
             Message::Backend(Event::Completed { id, result }) => {
                 if !self.active.remove(&id) {
+                    return Task::none();
+                }
+                // Lyrics outcomes, failures included, are shown in the lyrics view.
+                if self.lyrics.loading() == Some(id) {
+                    self.quiet.remove(&id);
+                    self.lyrics.complete(match result {
+                        Ok(Response::Lyrics(Some(found))) => lyrics::Status::Ready(found),
+                        Ok(_) => lyrics::Status::Missing,
+                        Err(e) => lyrics::Status::Failed(e),
+                    });
+                    self.follow_lyrics();
                     return Task::none();
                 }
                 let quiet: bool = self.quiet.remove(&id);
@@ -1116,6 +1223,8 @@ impl Ui {
             Message::SelectRow(index) => self.selected_row = Some(index),
             Message::Queue => {
                 self.queue = !self.queue;
+                self.lyrics_open &= !self.queue;
+                self.main_size = self.estimated_main_size();
                 // A remote device shows the preview the backend already holds.
                 if self.queue && !self.state.connect.is_remote() {
                     self.queue_offset = 0;
@@ -1136,6 +1245,12 @@ impl Ui {
             Message::Scrolled(area, m) => {
                 self.glide.observe(area, m);
                 let next = match area {
+                    smooth_scroll::Area::Lyrics => {
+                        let animating: bool = self.glide.animating(area);
+                        self.lyrics
+                            .observe(m.y, m.max, animating, std::time::Instant::now());
+                        return Task::none();
+                    }
                     smooth_scroll::Area::Main => Message::Scroll(m.y, m.height),
                     smooth_scroll::Area::Sidebar => {
                         Message::SidebarScroll(m.y, m.height, m.near_end())
@@ -1144,9 +1259,82 @@ impl Ui {
                 };
                 return self.reduce(next);
             }
-            Message::Wheel(area, delta) => self.glide.wheel(area, delta, std::time::Instant::now()),
-            Message::GlideStop(area) => self.glide.cancel(area),
+            Message::Wheel(area, delta) => {
+                let now = std::time::Instant::now();
+                if area == smooth_scroll::Area::Lyrics {
+                    self.lyrics.manual(now);
+                }
+                self.glide.wheel(area, delta, now);
+            }
+            Message::GlideStop(area) => {
+                if area == smooth_scroll::Area::Lyrics {
+                    self.lyrics.manual(std::time::Instant::now());
+                }
+                self.glide.cancel(area);
+            }
             Message::GlideFrame(now) => return self.glide.frame(now),
+            Message::Lyrics => {
+                self.lyrics_open = !self.lyrics_open;
+                // One right panel at a time, as in Spotify.
+                self.queue &= !self.lyrics_open;
+                self.main_size = self.estimated_main_size();
+                if let Err(e) = persistence::Preferences::save(self) {
+                    self.notice = e;
+                }
+                return self.sync_lyrics();
+            }
+            Message::LyricsFrame(now) => {
+                self.follow_lyrics();
+                return self.glide.frame(now);
+            }
+            Message::LyricsResized(size) => {
+                self.lyrics.viewport = Some(size);
+                self.follow_lyrics();
+            }
+            Message::LyricsRetry => {
+                self.lyrics.reset(None, None);
+                return self.sync_lyrics();
+            }
+            Message::LyricsKey(key) => self.lyrics_key = key,
+            Message::SaveLyricsKey => {
+                let key: String = self.lyrics_key.trim().to_owned();
+                if !key.is_empty() && self.send(Action::SetLyricsKey(Some(key))).is_some() {
+                    self.lyrics_key.clear();
+                    // Fetch again with the new key.
+                    self.lyrics.reset(None, None);
+                }
+            }
+            Message::RemoveLyricsKey => {
+                self.send(Action::SetLyricsKey(None));
+            }
+            Message::SplitStart(handle) => {
+                self.split_drag = Some(splits::Drag { handle, grab: None });
+            }
+            Message::SplitMove(x) => {
+                if let Some(mut drag) = self.split_drag {
+                    let (inner, right) = (self.frame_inner(), self.right_panel());
+                    let shown: f32 = self.splits.shown(drag.handle, inner, right);
+                    let width: f32 = drag.width(x, shown);
+                    self.splits.set(drag.handle, width, inner, right);
+                    self.split_drag = Some(drag);
+                    self.main_size = self.estimated_main_size();
+                    self.ensure_window();
+                }
+            }
+            Message::SplitEnd => {
+                if self.split_drag.take().is_some()
+                    && let Err(e) = persistence::Preferences::save(self)
+                {
+                    self.notice = e;
+                }
+            }
+            Message::OpenLink(url) => {
+                if url.starts_with("https://")
+                    && let Err(e) = open::that_detached(&url)
+                {
+                    self.show_notice(format!("Could not open the link: {e}"));
+                }
+            }
             Message::Client(s) => self.client = s,
             Message::Cache(s) => self.cache = s,
             Message::ThemePath(s) => self.theme_path = s,
@@ -1282,6 +1470,11 @@ impl Ui {
             window::events().map(|(id, event)| Message::Window(id, event)),
             iced::event::listen_with(shortcut),
         ]);
+        let events: Subscription<Message> = if self.split_drag.is_some() {
+            Subscription::batch([events, iced::event::listen_with(split_drag)])
+        } else {
+            events
+        };
         // Disconnect and failed-quit notices explain how to exit, so they stay until acted on.
         let events: Subscription<Message> =
             if self.notice_shown.is_some() && !self.disconnected && !self.quit_failed {
@@ -1292,7 +1485,16 @@ impl Ui {
             } else {
                 events
             };
-        let events: Subscription<Message> = if self.glide.active() {
+        let playing: bool = self.state.player.status == PlaybackStatus::Playing;
+        // The lyrics frame also drives the glide, so only one of them listens to frames.
+        let events: Subscription<Message> = if self.lyrics_open
+            && self.window.is_some()
+            && self.focused
+            && playing
+            && self.lyrics.animated()
+        {
+            Subscription::batch([events, window::frames().map(Message::LyricsFrame)])
+        } else if self.glide.active() {
             Subscription::batch([events, window::frames().map(Message::GlideFrame)])
         } else {
             events
@@ -1372,22 +1574,38 @@ impl Ui {
     /// the frame in `view` exactly: when a resize event arrives after the first layout,
     /// the measured size does not change again, so the estimate is what grids use.
     fn estimated_main_size(&self) -> iced::Size {
-        let gap: f32 = self.panel_gap();
-        let queue: f32 = if self.queue {
-            layout::QUEUE_WIDTH + gap
-        } else {
-            0.0
-        };
-        let panel_margin: f32 = 2.0 * styles::shadow_margin(&self.palette);
+        let (sidebar, right) = self.panel_widths();
         iced::Size::new(
-            self.window_size.width
-                - 2.0 * self.frame_edge()
-                - layout::SIDEBAR_WIDTH
-                - gap
-                - queue
-                - panel_margin,
+            self.frame_inner() - sidebar - right,
             self.window_size.height,
         )
+    }
+    /// The panel in the right slot, if any.
+    fn right_panel(&self) -> Option<splits::Right> {
+        if self.queue {
+            Some(splits::Right::Queue)
+        } else if self.lyrics_open {
+            Some(splits::Right::Lyrics)
+        } else {
+            None
+        }
+    }
+    /// Width the sidebar, main view and right panel share: the window without the frame
+    /// edges, the gaps between panels and the main panel's shadow margin.
+    fn frame_inner(&self) -> f32 {
+        let gaps: f32 = if self.right_panel().is_some() {
+            2.0
+        } else {
+            1.0
+        };
+        self.window_size.width
+            - 2.0 * self.frame_edge()
+            - gaps * self.panel_gap()
+            - 2.0 * styles::shadow_margin(&self.palette)
+    }
+    /// Shown sidebar and right panel widths (zero without a right panel).
+    fn panel_widths(&self) -> (f32, f32) {
+        self.splits.fit(self.frame_inner(), self.right_panel())
     }
     /// Width available to grids inside the main view.
     fn grid_width(&self) -> f32 {
@@ -1458,6 +1676,9 @@ impl Ui {
                 }
                 if self.queue {
                     return self.reduce(Message::Queue);
+                }
+                if self.lyrics_open {
+                    return self.reduce(Message::Lyrics);
                 }
                 return Task::none();
             }
@@ -1669,6 +1890,18 @@ fn long_duration(ms: u64) -> String {
 }
 
 /// Handle unconsumed keyboard and mouse shortcuts without intercepting text-field input.
+/// Cursor moves and the release while a panel boundary is dragged.
+fn split_drag(event: iced::Event, _: iced::event::Status, _: window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+            Some(Message::SplitMove(position.x))
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))
+        | iced::Event::Mouse(iced::mouse::Event::CursorLeft) => Some(Message::SplitEnd),
+        _ => None,
+    }
+}
+
 fn shortcut(event: iced::Event, status: iced::event::Status, _: window::Id) -> Option<Message> {
     if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) = event {
         return match button {
@@ -1713,6 +1946,7 @@ mod channel_tests {
             connect: crate::domain::ConnectState::default(),
             cache_used_bytes: 0,
             cache_limit_bytes: 123_000_000,
+            lyrics_key_set: false,
         };
         let (front, back): (FrontendPort, BackendPort) = channels(initial);
         let (ui, _task): (Ui, Task<Message>) = Ui::boot(front);

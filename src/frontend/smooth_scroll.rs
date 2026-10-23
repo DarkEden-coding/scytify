@@ -12,6 +12,8 @@ use std::time::Duration;
 const LINE_PX: f32 = 60.0;
 /// Easing time constant: about 95% of a wheel tick is covered after three of these.
 const TAU: Duration = Duration::from_millis(45);
+/// Slower easing for programmatic moves, such as following the sung lyrics line.
+const FOLLOW_TAU: Duration = Duration::from_millis(140);
 /// Remaining distance under which the animation lands on its target.
 const SETTLE_PX: f32 = 0.5;
 /// Wheel ticks closer together than this, in the same direction, build up speed.
@@ -30,16 +32,18 @@ pub(super) enum Area {
     Main,
     Sidebar,
     Queue,
+    Lyrics,
 }
 
 impl Area {
-    const ALL: [Area; 3] = [Area::Main, Area::Sidebar, Area::Queue];
+    const ALL: [Area; 4] = [Area::Main, Area::Sidebar, Area::Queue, Area::Lyrics];
 
     pub(super) fn id(self) -> Id {
         Id::new(match self {
             Area::Main => super::MAIN_SCROLL,
             Area::Sidebar => "sidebar",
             Area::Queue => "queue",
+            Area::Lyrics => "lyrics",
         })
     }
 }
@@ -84,6 +88,8 @@ struct Glide {
     /// Previous wheel tick and how many quick same-direction ticks preceded it.
     last_wheel: Option<(std::time::Instant, f32)>,
     streak: u32,
+    /// Easing of the running animation; wheel ticks use `TAU`.
+    slow: bool,
 }
 
 impl Glide {
@@ -118,6 +124,15 @@ impl Glide {
         };
         // Past-the-end targets are corrected by `observe` once the scrollable reports its extent.
         self.target = Some((base + delta).clamp(0.0, self.max.unwrap_or(f32::MAX)));
+        self.slow = false;
+    }
+
+    fn ease_to(&mut self, y: f32) {
+        if self.target.is_none() {
+            self.pos = self.observed;
+        }
+        self.target = Some(y.clamp(0.0, self.max.unwrap_or(f32::MAX)));
+        self.slow = true;
     }
 
     fn cancel(&mut self) {
@@ -132,7 +147,8 @@ impl Glide {
             self.pos = target;
             self.target = None;
         } else {
-            let step: f32 = gap * (1.0 - (-dt.as_secs_f32() / TAU.as_secs_f32()).exp());
+            let tau: Duration = if self.slow { FOLLOW_TAU } else { TAU };
+            let step: f32 = gap * (1.0 - (-dt.as_secs_f32() / tau.as_secs_f32()).exp());
             let limit: f32 = MAX_FRAME_STEP * self.height;
             self.pos += if limit > 0.0 {
                 step.clamp(-limit, limit)
@@ -150,6 +166,7 @@ pub(super) struct SmoothScroll {
     main: Glide,
     sidebar: Glide,
     queue: Glide,
+    lyrics: Glide,
     last_frame: Option<std::time::Instant>,
 }
 
@@ -159,6 +176,7 @@ impl SmoothScroll {
             Area::Main => &mut self.main,
             Area::Sidebar => &mut self.sidebar,
             Area::Queue => &mut self.queue,
+            Area::Lyrics => &mut self.lyrics,
         }
     }
 
@@ -174,9 +192,21 @@ impl SmoothScroll {
         self.glide(area).cancel();
     }
 
+    /// Glide to an offset with the slower programmatic easing.
+    pub(super) fn ease_to(&mut self, area: Area, y: f32) {
+        self.glide(area).ease_to(y);
+    }
+
+    /// Whether `area` is still moving toward a target.
+    pub(super) fn animating(&mut self, area: Area) -> bool {
+        self.glide(area).target.is_some()
+    }
+
     /// Whether frames are needed to keep animating.
     pub(super) fn active(&self) -> bool {
-        self.main.target.is_some() || self.sidebar.target.is_some() || self.queue.target.is_some()
+        [&self.main, &self.sidebar, &self.queue, &self.lyrics]
+            .iter()
+            .any(|glide| glide.target.is_some())
     }
 
     /// Advance every animation by the time since the previous frame.

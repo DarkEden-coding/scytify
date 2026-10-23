@@ -30,6 +30,19 @@ impl Api {
         query: &[(String, String)],
         body: Option<Value>,
     ) -> Result<Value, AppError> {
+        self.timed_player_request(token, method, path, query, body)
+            .await
+            .map(|(value, _)| value)
+    }
+
+    async fn timed_player_request(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<Value>,
+    ) -> Result<(Value, Instant), AppError> {
         if let Some(until) = *self.playback_backoff.lock().unwrap()
             && until > Instant::now()
         {
@@ -55,10 +68,15 @@ impl Api {
         if let Some(body) = body {
             request = request.json(&body);
         }
+        let sent_at = Instant::now();
         let response = request
             .send()
             .await
             .map_err(|_| err(ErrorKind::Network, "Spotify playback is unreachable"))?;
+        let received_at = Instant::now();
+        // Spotify's timestamp can be stale. Estimate the measurement using half
+        // the request RTT, excluding JSON parsing and subsequent detail requests.
+        let observed_at = request_midpoint(sent_at, received_at);
         let result = response_json(response).await.map_err(playback_scope);
         if let Err(error) = &result
             && error.kind == ErrorKind::RateLimited
@@ -67,7 +85,7 @@ impl Api {
                 Duration::from_secs(error.retry_after_seconds.unwrap_or(5).max(1)),
             );
         }
-        result
+        result.map(|value| (value, observed_at))
     }
 
     pub(super) async fn observe(
@@ -75,10 +93,10 @@ impl Api {
         token: &str,
         details: bool,
     ) -> Result<Observation, AppError> {
-        let value = self
-            .player_request(token, Method::GET, "", &[], None)
+        let (value, observed_at) = self
+            .timed_player_request(token, Method::GET, "", &[], None)
             .await?;
-        let mut observation = parse_player(&value);
+        let mut observation = parse_player(&value, observed_at);
         if details {
             let devices = self
                 .player_request(token, Method::GET, "/devices", &[], None)
@@ -300,7 +318,21 @@ fn parse_queue(value: &Value) -> Vec<Track> {
         .collect()
 }
 
-fn parse_player(value: &Value) -> Observation {
+fn request_midpoint(sent_at: Instant, received_at: Instant) -> Instant {
+    sent_at + received_at.saturating_duration_since(sent_at) / 2
+}
+
+/// Keep a stable playing anchor when a fresh measurement only differs by jitter.
+fn keep_anchor(player: &PlayerState, observation: &Observation, unchanged: bool) -> bool {
+    unchanged
+        && player.status == PlaybackStatus::Playing
+        && observation.status == PlaybackStatus::Playing
+        && super::playback::position_at(player, observation.observed_at)
+            .abs_diff(observation.position_ms)
+            <= 250
+}
+
+fn parse_player(value: &Value, observed_at: Instant) -> Observation {
     Observation {
         devices: None,
         active: parse_device(&value["device"]).map(|mut device| {
@@ -309,7 +341,7 @@ fn parse_player(value: &Value) -> Observation {
         }),
         track: parse_track(&value["item"]),
         position_ms: value["progress_ms"].as_u64().unwrap_or(0),
-        observed_at: Instant::now(),
+        observed_at,
         status: if value.is_null() {
             PlaybackStatus::Stopped
         } else if value["is_playing"].as_bool().unwrap_or(false) {
@@ -403,7 +435,7 @@ pub(super) fn apply(
         for device in &mut state.connect.devices {
             device.is_active = device.id == state.connect.this_device_id;
         }
-    } else if let Some(mut active) = observation.active {
+    } else if let Some(mut active) = observation.active.take() {
         active.is_this_app = active.id.as_deref() == this_id;
         state.connect.active_device_id = active.id.clone();
         for device in &mut state.connect.devices {
@@ -441,25 +473,22 @@ pub(super) fn apply(
         return;
     }
     let old_track = state.player.current.as_ref().map(|track| &track.id);
-    let changed = previous_device != state.connect.active_device_id
-        || old_track != observation.track.as_ref().map(|track| &track.id)
-        || state.connect.context_uri != observation.context_uri;
+    let same_playback = previous_device == state.connect.active_device_id
+        && old_track == observation.track.as_ref().map(|track| &track.id);
+    let changed = !same_playback || state.connect.context_uri != observation.context_uri;
     if !changed && state.connect.is_remote() {
-        let elapsed = if state.player.status == PlaybackStatus::Playing {
-            observation
-                .observed_at
-                .saturating_duration_since(state.player.observed_at)
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64
-        } else {
-            0
-        };
-        let expected = state.player.position_ms.saturating_add(elapsed);
+        let expected = super::playback::position_at(&state.player, observation.observed_at);
         if expected.abs_diff(observation.position_ms) > 1500 {
             // Only confirmed discontinuities in remote observations emit MPRIS Seeked.
             state.player.seek_revision = state.player.seek_revision.wrapping_add(1);
         }
     }
+    // The local decoder is more precise than dealer echoes on this device.
+    let preserve_anchor = keep_anchor(&state.player, &observation, same_playback)
+        || (spirc
+            && !state.connect.is_remote()
+            && same_playback
+            && state.player.status == observation.status);
     if changed
         || observation.queue.as_ref().is_some_and(|queue| {
             queue
@@ -479,14 +508,16 @@ pub(super) fn apply(
     state.connect.context_uri = observation.context_uri;
     state.player.current = observation.track;
     state.player.current_entry_id = None;
-    state.player.position_ms = observation.position_ms.min(
-        state
-            .player
-            .current
-            .as_ref()
-            .map_or(u64::MAX, |t| t.duration_ms),
-    );
-    state.player.observed_at = observation.observed_at;
+    if !preserve_anchor {
+        state.player.position_ms = observation.position_ms.min(
+            state
+                .player
+                .current
+                .as_ref()
+                .map_or(u64::MAX, |t| t.duration_ms),
+        );
+        state.player.observed_at = observation.observed_at;
+    }
     state.player.status = observation.status;
     state.player.shuffle = observation.shuffle;
     state.player.repeat = observation.repeat;
@@ -573,6 +604,92 @@ pub(super) fn queue_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_player(value: &Value) -> Observation {
+        super::parse_player(value, Instant::now())
+    }
+
+    #[test]
+    fn poll_measurement_uses_half_rtt_and_ignores_stale_server_timestamp() {
+        let sent = Instant::now();
+        let received = sent + Duration::from_millis(160);
+        let measured = request_midpoint(sent, received);
+        assert_eq!(measured, sent + Duration::from_millis(80));
+        let observation = super::parse_player(
+            &json!({"timestamp": 1, "progress_ms": 1000, "is_playing": true}),
+            measured,
+        );
+        assert_eq!(observation.position_ms, 1000);
+        assert_eq!(observation.observed_at, measured);
+    }
+
+    #[test]
+    fn polling_and_dealer_jitter_preserve_anchors_but_jumps_and_transitions_replace_them() {
+        for source in [RemoteSource::Polling, RemoteSource::Live] {
+            let mut state = crate::backend::initial_state();
+            let start = Instant::now();
+            let mut observation = parse_player(&json!({
+                "device": {"id": "phone", "name": "Phone", "type": "Smartphone"},
+                "item": {"id": "0123456789012345678901", "name": "Song", "duration_ms": 120000, "artists": []},
+                "progress_ms": 12000, "is_playing": true
+            }));
+            observation.observed_at = start;
+            apply(&mut state, observation.clone(), source, false);
+            for jitter in [-250_i64, -40, 80, 250] {
+                observation.observed_at = start + Duration::from_secs(1);
+                observation.position_ms = (13_000 + jitter) as u64;
+                observation.context_uri = Some(format!("spotify:playlist:{jitter}"));
+                apply(&mut state, observation.clone(), source, false);
+                assert_eq!(state.player.position_ms, 12_000);
+                assert_eq!(state.player.observed_at, start);
+            }
+            observation.position_ms = 20_000;
+            apply(&mut state, observation.clone(), source, false);
+            assert_eq!(state.player.position_ms, 20_000);
+            assert_eq!(state.player.observed_at, observation.observed_at);
+            assert_eq!(state.player.seek_revision, 1);
+            observation.status = PlaybackStatus::Paused;
+            observation.position_ms = 20_010;
+            apply(&mut state, observation.clone(), source, false);
+            assert_eq!(state.player.position_ms, 20_010);
+            assert_eq!(state.player.status, PlaybackStatus::Paused);
+            observation.status = PlaybackStatus::Playing;
+            observation.track.as_mut().unwrap().id = SpotifyId("new-track".into());
+            observation.position_ms = 0;
+            apply(&mut state, observation.clone(), source, false);
+            assert_eq!(state.player.position_ms, 0);
+            observation.active.as_mut().unwrap().id = Some("speaker".into());
+            observation.position_ms = 100;
+            apply(&mut state, observation, source, false);
+            assert_eq!(state.player.position_ms, 100);
+        }
+    }
+
+    #[test]
+    fn local_dealer_echo_keeps_the_more_precise_decoder_anchor() {
+        let mut state = crate::backend::initial_state();
+        state.connect.this_device_id = Some("local".into());
+        let mut observation = parse_player(&json!({
+            "device": {"id": "local", "name": "App", "type": "Computer"},
+            "item": {"id": "0123456789012345678901", "name": "Song", "duration_ms": 120000, "artists": []},
+            "progress_ms": 12000, "is_playing": true
+        }));
+        apply(&mut state, observation.clone(), RemoteSource::Live, true);
+        let decoder_time = observation.observed_at + Duration::from_millis(100);
+        super::super::playback::apply_anchor(
+            &mut state.player,
+            &super::super::playback::Update::Playing(12_100),
+            decoder_time,
+        );
+        observation.observed_at += Duration::from_secs(1);
+        observation.position_ms = 12_000; // A delayed dealer echo accompanying new options.
+        observation.shuffle = true;
+        apply(&mut state, observation, RemoteSource::Live, true);
+        assert!(state.player.shuffle);
+        assert_eq!(state.player.position_ms, 12_100);
+        assert_eq!(state.player.observed_at, decoder_time);
+    }
+
     #[test]
     fn local_device_is_offered_once_and_real_registration_replaces_synthetic() {
         let mut state = crate::backend::initial_state();

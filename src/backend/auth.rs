@@ -55,6 +55,15 @@ impl Vault {
                 .map_err(safe_keyring)
         })
     }
+    pub(super) fn delete_entry(name: &str) -> Result<(), String> {
+        secret_service(|| {
+            let entry = Entry::new(SERVICE, name).map_err(safe_keyring)?;
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(e) => Err(safe_keyring(e)),
+            }
+        })
+    }
     /// Attempts every entry even if one deletion fails. No network revocation is claimed.
     pub(crate) fn clear() -> Result<(), String> {
         secret_service(|| {

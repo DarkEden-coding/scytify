@@ -61,6 +61,24 @@ same player. It owns local transfer handling, queue advancement, shuffle/repeat,
 and published device state. The decoder requests 320 kbps, normalization, gapless
 playback, and one-second position events.
 
+Position anchors retain their measurement instant through actor processing. A separate
+receiver task timestamps decoder events on receipt because librespot 0.8 does not
+include emission timestamps. Queue/options changes preserve the existing anchor;
+local fallback pause/seek first advance it to the command instant, and Seeked
+acknowledgements immediately replace it. Events received before a newer local
+anchor are ignored. Track transitions stop extrapolation while the decoder loads.
+The one-second event interval remains unchanged; the UI extrapolates between
+measurements. Actual output latency and the ±50 ms local target need live audio
+verification.
+
+Web API progress uses the request/response-header midpoint, before JSON parsing
+or devices/queue requests; the potentially stale response timestamp is ignored.
+Remote polling and dealer updates retain a playing anchor when progress differs
+by at most 250 ms and device, track, and status match. Larger jumps and
+transitions replace it. Dealer echoes for unchanged local playback preserve the
+more precise decoder anchor. Network asymmetry and device/reporting latency still
+limit remote accuracy.
+
 The custom queue remains the local fallback when Connect initialization fails.
 After Web API sign-in the picker includes this computer. Until playback consent
 creates a session, that synthetic row is disabled and explains the required consent.
@@ -256,3 +274,25 @@ session ID to KEYMASTER. The token's originating client identity must also match
 This design follows librespot's binary; using Spotify's client identity and
 internal APIs remains a Terms of Service grey area. Spotify may reject it due to
 account policy or protocol changes. No live account was used in automated verification. ALSA is the compiled output backend in this dependency set, so machines without a usable ALSA device receive a sink/player error. The bounded cache stores artwork and encrypted audio files. Offline playback is not claimed: cached files still need a session for their keys.
+
+## Lyrics
+
+`Lyrics { track_id }` fetches Spicy Lyrics independently of Spotify sign-in.
+Set the API key through `SetLyricsKey`; Secret Service stores it under
+`spicy-lyrics-key`. Startup publishes only `lyrics_key_set`. Spotify sign-out
+preserves this key; `SetLyricsKey(None)` deletes it. Missing keys return an
+Authentication error directing the user to Settings → Lyrics, without a network
+request. Keys never enter SQLite or provider error messages.
+
+Requests use a descriptive User-Agent, Bearer authorization, no Origin header,
+a 20-second timeout, and no redirects. Syllable, line, and static responses map
+to the shared lyrics contract, including background vocals, opposite alignment,
+and source/uploader/maker attribution. Provider errors use the common error
+kinds; 429 and 503 retain Retry-After seconds. Lyrics jobs share the four-job
+budget and support CancelRequest.
+
+SQLite caches successful lyrics for 30 days and missing lyrics for one day.
+Expired entries are discarded on startup, lookup, and the periodic actor tick.
+ClearCache removes lyrics along with artwork and audio. Tests use a shortened
+local syllable payload and synthetic data; live API access and real key storage
+have not been tested.

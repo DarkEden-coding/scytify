@@ -325,6 +325,77 @@ fn synthetic_artwork(url: &str) -> Vec<u8> {
     bytes
 }
 
+/// Word-synced placeholder lyrics, one line every three seconds, with a duet line,
+/// background vocals and a community credit, so every lyrics style shows up.
+fn synthetic_lyrics(track_id: SpotifyId) -> Lyrics {
+    const WORDS: [&str; 12] = [
+        "Synthetic words for the preview window",
+        "Every syllable here is placeholder text",
+        "Counting the beats of an imaginary song",
+        "Nothing real is sung in this offline fixture",
+        "The paper satellites hum along",
+        "One more line to show how wrapping works when a sentence keeps going well past the width of the lyrics column",
+        "Lights on the tram at the end of the line",
+        "Echoes of the chorus in the distance",
+        "The final verse of the synthetic song",
+        "Fading out slowly",
+        "And again",
+        "Fin",
+    ];
+    let lines = WORDS
+        .iter()
+        .enumerate()
+        .map(|(i, words)| {
+            let start_ms: u64 = 2_000 + i as u64 * 3_000;
+            let count: u64 = words.split_whitespace().count() as u64;
+            let step: u64 = 2_600 / count;
+            let lead: Vec<Syllable> = words
+                .split_whitespace()
+                .enumerate()
+                .map(|(w, word)| Syllable {
+                    text: word.into(),
+                    start_ms: start_ms + w as u64 * step,
+                    end_ms: start_ms + (w as u64 + 1) * step,
+                    joins_next: false,
+                })
+                .collect();
+            let background: Vec<Syllable> = if i % 4 == 3 {
+                vec![Syllable {
+                    text: "(ooh, ooh)".into(),
+                    start_ms: start_ms + 1_500,
+                    end_ms: start_ms + 2_600,
+                    joins_next: false,
+                }]
+            } else {
+                Vec::new()
+            };
+            LyricsLine {
+                start_ms,
+                end_ms: start_ms + 2_600,
+                opposite: i % 5 == 4,
+                lead,
+                background,
+            }
+        })
+        .collect();
+    Lyrics {
+        track_id,
+        sync: LyricsSync::Syllable,
+        lines,
+        credit: LyricsCredit {
+            source: LyricsSource::Community,
+            uploader: Some(Contributor {
+                name: "preview-uploader".into(),
+                url: "https://spicylyrics.org".into(),
+            }),
+            maker: Some(Contributor {
+                name: "preview-maker".into(),
+                url: "https://spicylyrics.org".into(),
+            }),
+        },
+    }
+}
+
 /// Serve clearly synthetic metadata and artwork entirely in memory, without desktop adapters.
 async fn serve(mut port: BackendPort, mut state: AppState) {
     let catalog: Catalog = Catalog::new();
@@ -333,6 +404,7 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
     state.player.current_entry_id = Some(1);
     state.player.position_ms = 67_000;
     let remote = std::env::var("CS_PREVIEW_REMOTE").as_deref() == Ok("1");
+    let lyrics_preview: bool = std::env::var("CS_PREVIEW_ROUTE").as_deref() == Ok("lyrics");
     state.player.status = if remote {
         PlaybackStatus::Playing
     } else {
@@ -421,6 +493,11 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
         state.connect.source = RemoteSource::Polling;
     }
     state.player.volume = if remote { 0.42 } else { 0.65 };
+    if lyrics_preview {
+        state.lyrics_key_set = true;
+        state.player.status = PlaybackStatus::Playing;
+        state.player.position_ms = 9_000;
+    }
     port.state.send_replace(state.clone());
     if let Ok(message) = std::env::var("CS_PREVIEW_NOTICE") {
         let notice = AppError {
@@ -547,9 +624,16 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
                 bytes: synthetic_artwork(&url),
             },
             Action::CancelRequest(_) => continue,
+            Action::Lyrics { track_id } => Response::Lyrics(Some(synthetic_lyrics(track_id))),
             _ => Response::Accepted,
         };
-        state.player.observed_at = std::time::Instant::now();
+        // Keep the anchor continuous: a playing track advances by the time since the last one.
+        let now = std::time::Instant::now();
+        if state.player.status == PlaybackStatus::Playing {
+            let elapsed = now.duration_since(state.player.observed_at).as_millis() as u64;
+            state.player.position_ms += elapsed;
+        }
+        state.player.observed_at = now;
         port.state.send_replace(state.clone());
         if port
             .events
@@ -577,7 +661,7 @@ fn preview_route(route: &str) -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => 1280.0,
     };
     let (kind, key, title, artwork) = match route {
-        "home" | "queue" | "settings" => ("library", "", "Home", ""),
+        "home" | "queue" | "settings" | "lyrics" => ("library", "", "Home", ""),
         "playlist" => (
             "playlist",
             "previewplaylist3",
@@ -612,6 +696,7 @@ fn preview_route(route: &str) -> Result<(), Box<dyn std::error::Error>> {
         "height": 800.0,
         "settings": route == "settings",
         "queue": route == "queue",
+        "lyrics": route == "lyrics",
         "devices": std::env::var("CS_PREVIEW_DEVICES").as_deref() == Ok("1"),
         "artwork": (!artwork.is_empty()).then_some(artwork),
     });

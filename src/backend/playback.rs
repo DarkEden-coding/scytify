@@ -9,9 +9,10 @@ use librespot_playback::{
     player::{Player, PlayerEvent, PlayerEventChannel},
 };
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Where sessions cache audio and the total cache limit it shares with artwork. Set by the
@@ -47,6 +48,7 @@ pub(crate) struct Playback {
     pub connect_error: Option<String>,
     pub mixer: Arc<dyn Mixer>,
     events: Option<PlayerEventChannel>,
+    event_clock: EventClock,
     event_gate: Mutex<EventGate>,
 }
 
@@ -104,7 +106,7 @@ impl Playback {
         let player = Player::new(player_config(), session.clone(), getter, move || {
             backend(None, AudioFormat::default())
         });
-        let events = player.get_player_event_channel();
+        let (events, event_clock) = EventClock::attach(player.get_player_event_channel());
         let (connect, connect_error) = match super::connect::Connect::new(
             session.clone(),
             credentials.clone(),
@@ -143,6 +145,7 @@ impl Playback {
             connect_error,
             mixer,
             events: Some(events),
+            event_clock,
             event_gate: Mutex::new(EventGate::default()),
         })
     }
@@ -195,7 +198,8 @@ impl Playback {
         self.player.seek(ms.min(u32::MAX as u64) as u32);
     }
     /// Validates an event against the most recent load/seek generation before exposing it.
-    pub(crate) fn update(&self, event: PlayerEvent) -> Option<Update> {
+    pub(crate) fn update(&self, event: PlayerEvent) -> Option<(Update, Instant)> {
+        let observed_at = self.event_clock.pop();
         let mut gate = self.event_gate.lock().unwrap();
         if self.connect.is_some()
             && let PlayerEvent::Loading {
@@ -217,7 +221,7 @@ impl Playback {
                 .store(false, std::sync::atomic::Ordering::Relaxed),
             _ => {}
         }
-        update
+        update.map(|update| (update, observed_at))
     }
     /// Updates software attenuation without exposing an unbounded integer conversion.
     pub(crate) fn set_volume(&self, volume: f32) {
@@ -230,6 +234,102 @@ impl Drop for Playback {
         self.stop();
         self.session.shutdown();
     }
+}
+
+/// Timestamp events before they wait behind actor commands, jobs, or persistence.
+/// librespot 0.8 exposes no emission time. Receipt in this independent task is the
+/// closest available measurement. Keep its public event channel type so command
+/// cancellation can continue to drop the receiver without knowing about timing.
+struct EventClock {
+    times: Arc<Mutex<VecDeque<Instant>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl EventClock {
+    fn attach(mut source: PlayerEventChannel) -> (PlayerEventChannel, Self) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let times = Arc::new(Mutex::new(VecDeque::new()));
+        let pending = times.clone();
+        let task = tokio::spawn(async move {
+            while let Some(event) = source.recv().await {
+                let received_at = Instant::now();
+                pending.lock().unwrap().push_back(received_at);
+                if sender.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        (receiver, Self { times, task })
+    }
+
+    fn pop(&self) -> Instant {
+        self.times
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("event timestamp")
+    }
+}
+
+impl Drop for EventClock {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Evaluates the monotonic position anchor at a specified instant.
+pub(super) fn position_at(player: &crate::domain::PlayerState, at: Instant) -> u64 {
+    let elapsed = if player.status == crate::domain::PlaybackStatus::Playing {
+        at.saturating_duration_since(player.observed_at)
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    } else {
+        0
+    };
+    player.position_ms.saturating_add(elapsed).min(
+        player
+            .current
+            .as_ref()
+            .map_or(u64::MAX, |track| track.duration_ms),
+    )
+}
+
+/// Advances both halves of an anchor before a synchronous local transport change.
+pub(super) fn advance_anchor(player: &mut crate::domain::PlayerState, at: Instant) {
+    player.position_ms = position_at(player, at);
+    player.observed_at = at;
+}
+
+/// Applies only measured decoder anchors. Terminal events have no position.
+pub(super) fn apply_anchor(
+    player: &mut crate::domain::PlayerState,
+    update: &Update,
+    observed_at: Instant,
+) -> bool {
+    use crate::domain::PlaybackStatus;
+    let position_ms = match *update {
+        Update::Loading(ms) => {
+            player.status = PlaybackStatus::Loading;
+            ms
+        }
+        Update::Playing(ms) => {
+            player.status = PlaybackStatus::Playing;
+            ms
+        }
+        Update::Paused(ms) => {
+            player.status = PlaybackStatus::Paused;
+            ms
+        }
+        Update::Position(ms) => ms,
+        Update::Seeked(ms) => {
+            player.seek_revision = player.seek_revision.wrapping_add(1);
+            ms
+        }
+        Update::End | Update::Unavailable => return false,
+    };
+    player.position_ms = position_ms;
+    player.observed_at = observed_at;
+    true
 }
 
 /// Closes partially initialized sessions when connection fails or is cancelled.
@@ -391,6 +491,62 @@ mod event_tests {
         let uri = uri(&id).unwrap();
         (id, uri)
     }
+    #[test]
+    fn measured_transitions_and_seek_use_receipt_time_despite_actor_delay() {
+        use crate::domain::PlaybackStatus;
+        let mut player = crate::backend::initial_state().player;
+        let received_at = Instant::now();
+        let processed_at = received_at + Duration::from_millis(180);
+        apply_anchor(&mut player, &Update::Playing(12_000), received_at);
+        assert_eq!(position_at(&player, processed_at), 12_180);
+        apply_anchor(&mut player, &Update::Seeked(45_000), received_at);
+        assert_eq!(position_at(&player, processed_at), 45_180);
+        assert_eq!(player.seek_revision, 1);
+        apply_anchor(&mut player, &Update::Paused(45_010), received_at);
+        assert_eq!(position_at(&player, processed_at), 45_010);
+        apply_anchor(&mut player, &Update::Loading(0), received_at);
+        assert_eq!(player.status, PlaybackStatus::Loading);
+        assert_eq!(position_at(&player, processed_at), 0);
+        assert!(!apply_anchor(&mut player, &Update::End, processed_at));
+        assert_eq!(player.observed_at, received_at);
+    }
+
+    #[test]
+    fn local_transport_advances_both_halves_of_the_anchor_before_freezing() {
+        let mut player = crate::backend::initial_state().player;
+        let start = Instant::now();
+        player.status = crate::domain::PlaybackStatus::Playing;
+        player.position_ms = 5000;
+        player.observed_at = start;
+        let command_at = start + Duration::from_millis(820);
+        advance_anchor(&mut player, command_at);
+        assert_eq!(position_at(&player, command_at), 5820);
+        player.status = crate::domain::PlaybackStatus::Paused;
+        assert_eq!(
+            position_at(&player, command_at + Duration::from_secs(2)),
+            5820
+        );
+    }
+
+    #[tokio::test]
+    async fn event_clock_stamps_before_the_actor_consumes_each_event() {
+        let (sender, source) = tokio::sync::mpsc::unbounded_channel();
+        let (mut receiver, clock) = EventClock::attach(source);
+        let before = Instant::now();
+        sender
+            .send(PlayerEvent::PlayRequestIdChanged { play_request_id: 1 })
+            .unwrap();
+        sender
+            .send(PlayerEvent::PlayRequestIdChanged { play_request_id: 2 })
+            .unwrap();
+        receiver.recv().await.unwrap();
+        let first = clock.pop();
+        receiver.recv().await.unwrap();
+        let second = clock.pop();
+        assert!(before <= first && first <= second && second <= Instant::now());
+        assert!(clock.times.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn stale_and_duplicate_terminal_events_are_ignored() {
         let (a, au) = track("4uLU6hMCjMI75M1A2tKUQC");

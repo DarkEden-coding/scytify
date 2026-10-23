@@ -2,7 +2,7 @@
 use super::sidebar::{FADE, GUTTER, gutter_scrollbar};
 use super::*;
 use crate::frontend::artwork::Shape;
-use crate::frontend::layout::{QUEUE_WIDTH, visible_rows};
+use crate::frontend::layout::visible_rows;
 use iced::widget::column;
 use iced::widget::scrollable;
 
@@ -30,7 +30,7 @@ impl Ui {
             self.next_up()
         });
         container(self.panel(content.height(Length::Fill), p.shape.padding))
-            .width(QUEUE_WIDTH)
+            .width(self.panel_widths().1)
             .height(Length::Fill)
             .into()
     }
@@ -116,7 +116,7 @@ impl Ui {
     ) -> Element<'a> {
         let p: &Palette = &self.palette;
         let remove_width: f32 = if remove.is_some() { 38.0 } else { 0.0 };
-        let width: f32 = QUEUE_WIDTH
+        let width: f32 = self.panel_widths().1
             - 2.0 * (p.shape.padding + styles::shadow_margin(p))
             - THUMB
             - 12.0

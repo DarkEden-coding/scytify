@@ -4,9 +4,6 @@
 //! request window must agree on every height above and inside them. Keep blocks that
 //! precede a virtualized list at the fixed heights declared here.
 
-/// Sidebar and optional queue panel widths.
-pub const SIDEBAR_WIDTH: f32 = 280.0;
-pub const QUEUE_WIDTH: f32 = 300.0;
 /// Height of a sidebar playlist row: 48px thumbnail plus padding.
 pub const SIDEBAR_ROW: f32 = 64.0;
 /// Horizontal padding inside the main view.

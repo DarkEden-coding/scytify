@@ -484,6 +484,27 @@ pub fn panel(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
     }
 }
 
+/// Lyrics backdrop: the cover's color made readable, like the page header tint.
+pub fn lyrics_backdrop(
+    p: &Palette,
+    tint: Option<Color>,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let p: Palette = *p;
+    move |_| {
+        let c = p.colors;
+        let color: Color = match tint {
+            Some(color) => tint::readable(color, c.text),
+            None => mix(c.surface_hover, c.accent, 0.12),
+        };
+        container::Style {
+            background: Some(color.into()),
+            text_color: Some(c.text),
+            border: outline(&p, p.shape.radius_large),
+            ..container::Style::default()
+        }
+    }
+}
+
 /// Panel margin reserved for an emulated shadow; zero for flat themes.
 pub fn shadow_margin(p: &Palette) -> f32 {
     match p.shadow.style {
