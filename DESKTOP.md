@@ -28,16 +28,17 @@ The app has no tray entry: it is a plain window app, and closing the window quit
 
 The window sets Wayland `app_id` / X11 class `custom-spotify`, matching `packaging/custom-spotify.desktop`
 (`Icon=custom-spotify`, `StartupWMClass=custom-spotify`), so KDE matches the window to the launcher.
-Install for the current user:
+Build and install for the current user, or rebuild and reinstall after changes:
 
 ```sh
-for s in 16 32 48 64 128 256 512; do
-  install -Dm644 assets/icons/custom-spotify-$s.png ~/.local/share/icons/hicolor/${s}x${s}/apps/custom-spotify.png
-done
-install -Dm644 assets/icons/custom-spotify.svg ~/.local/share/icons/hicolor/scalable/apps/custom-spotify.svg
-install -Dm644 packaging/custom-spotify.desktop ~/.local/share/applications/custom-spotify.desktop
-gtk-update-icon-cache -q ~/.local/share/icons/hicolor 2>/dev/null || true
+tools/install.sh
 ```
+
+It builds the release binary, installs it as `~/.local/bin/custom-spotify`, installs the icons under
+`~/.local/share/icons/hicolor` and the launcher entry (its `Exec` naming that binary) under
+`~/.local/share/applications`, and refreshes the icon and KDE launcher caches. A running instance is
+quit through MPRIS, so it saves its playback checkpoint (terminated only if it is still running after
+ten seconds), then relaunched from the new binary.
 
 ## Title bar, window position and zoom
 
