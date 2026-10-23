@@ -83,8 +83,8 @@ impl Ui {
         self.scroll_page(page.into())
     }
 
-    /// Home: a shelf of your playlists over a shelf of saved albums, each one row of cards
-    /// with "Show all" opening the full, paged grid.
+    /// Home: Made For You, then a shelf of your playlists over a shelf of saved albums,
+    /// each one row of cards with "Show all" opening the full, paged grid.
     fn home_view<'a>(&'a self, playlists: &'a Page<Playlist>) -> Element<'a> {
         let albums: (&'a [Album], Option<&'a str>) = match &self.shelf {
             _ if self.shelf_failed => (&[], Some("Saved albums could not be loaded.")),
@@ -96,6 +96,7 @@ impl Ui {
         let all_playlists =
             Message::Navigate(Route::browse(Query::OwnPlaylists, "Your playlists", None));
         column![
+            self.mixes_shelf(),
             self.shelf(
                 "Your playlists",
                 all_playlists,
@@ -112,6 +113,61 @@ impl Ui {
             ),
         ]
         .into()
+    }
+
+    /// Discover first, then Discover Weekly and Spotify's other mixes. All of them need the
+    /// playback session, so without it the shelf explains how to enable it.
+    fn mixes_shelf(&self) -> Element<'_> {
+        let grid: Grid = self.grid_layout();
+        let status: Option<String> = if self.state.connect.playback_auth != PlaybackAuth::Ready {
+            Some("Enable playback & Spotify Connect in Settings → Account to see Discover and your mixes.".into())
+        } else if let Some(error) = &self.mixes_failed {
+            Some(format!("Your mixes could not be loaded. {error}"))
+        } else if self.mixes.is_none() {
+            Some("Loading…".into())
+        } else {
+            None
+        };
+        let body: Element<'_> = match (&status, &self.mixes) {
+            (Some(status), _) if self.state.connect.playback_auth != PlaybackAuth::Ready => {
+                self.subdued(status.clone()).into()
+            }
+            (Some(status), _) => row![self.discover_card(grid), self.subdued(status.clone())]
+                .spacing(GRID_GAP)
+                .into(),
+            (None, mixes) => {
+                let mut cards = row![self.discover_card(grid)].spacing(GRID_GAP);
+                for item in mixes.iter().flatten().take(grid.columns.saturating_sub(1)) {
+                    cards = cards.push(self.playlist_card(item, grid));
+                }
+                cards.into()
+            }
+        };
+        let all = Message::Navigate(Route::browse(Query::MadeForYou, "Made for you", None));
+        column![
+            self.section_link("Made for you", self.mixes.is_some().then_some(all)),
+            container(body)
+                .padding([0.0, CONTENT_PADDING])
+                .height(grid.card_height + GRID_GAP),
+        ]
+        .into()
+    }
+
+    /// Endless recommendations of songs you have not liked or heard before.
+    fn discover_card(&self, grid: Grid) -> Element<'_> {
+        let subtitle: &str = if self.state.discover_active {
+            "Playing now"
+        } else {
+            "Songs you haven't heard"
+        };
+        self.card(
+            grid,
+            self.gradient_cover(Icon::Radio, grid.art()),
+            "Discover",
+            subtitle.into(),
+            Message::Action(Action::PlayDiscover),
+            Some(Message::Action(Action::PlayDiscover)),
+        )
     }
 
     /// Large centered icon, heading and hint for search start and no-result pages.

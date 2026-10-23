@@ -101,6 +101,11 @@ impl Ui {
                 account_actions,
             ),
             self.setting_section(
+                "Playback",
+                "When an album, playlist or song ends, keep playing similar songs. A change applies the next time Custom Spotify starts.",
+                self.autoplay_choice(),
+            ),
+            self.setting_section(
                 "Spotify developer app",
                 "Register the backend's exact http://127.0.0.1:PORT/callback redirect in your developer app. Use the public Client ID, never a client secret. Playback and Spotify Connect use a separate one-time browser consent above.",
                 self.field(
@@ -245,6 +250,23 @@ impl Ui {
             ]
             .spacing(p.shape.spacing)
             .align_y(Alignment::Center),
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    /// Autoplay on or off; saved immediately.
+    fn autoplay_choice(&self) -> Element<'_> {
+        let p: &Palette = &self.palette;
+        let choice = |label: &'static str, enabled: bool| {
+            button(self.label(label))
+                .padding([9.0, p.shape.padding])
+                .style(styles::choice(p, self.state.settings.autoplay == enabled))
+                .on_press(Message::SetAutoplay(enabled))
+        };
+        column![
+            self.subdued("Autoplay"),
+            row![choice("On", true), choice("Off", false)].spacing(p.shape.spacing),
         ]
         .spacing(6)
         .into()

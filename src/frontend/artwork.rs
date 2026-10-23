@@ -257,11 +257,23 @@ impl Ui {
                     }
                 }
             }
-            // The saved-albums shelf sits below the playlist shelf on Home.
+            // Home stacks Made For You, your playlists, then saved albums.
             let shelf: f32 = self.shelf_height();
             if self.home
+                && let Some(mixes) = &self.mixes
+                && self.on_screen(0.0, shelf)
+            {
+                urls.extend(
+                    mixes
+                        .iter()
+                        .take(self.grid_layout().columns.saturating_sub(1))
+                        .filter_map(|x| x.artwork_url.as_deref())
+                        .map(cover),
+                );
+            }
+            if self.home
                 && let Some(albums) = &self.shelf
-                && self.on_screen(shelf, shelf)
+                && self.on_screen(2.0 * shelf, shelf)
             {
                 urls.extend(
                     albums
@@ -408,11 +420,14 @@ impl Ui {
     }
     /// Liked Songs stand-in cover: the accent gradient with a heart, at any edge.
     pub(super) fn liked_cover(&self, edge: f32) -> Element<'_> {
+        self.gradient_cover(icons::Icon::Heart, edge)
+    }
+    /// Accent gradient with a centered glyph, for collections without cover art.
+    pub(super) fn gradient_cover(&self, glyph: icons::Icon, edge: f32) -> Element<'_> {
         let p: &Palette = &self.palette;
-        // Like the art placeholders, the heart is drawn even for text-icon themes.
-        let heart =
-            icons::icon(icons::Icon::Heart, (edge * 0.42).round()).color(p.colors.on_accent);
-        iced::widget::container(heart)
+        // Like the art placeholders, the glyph is drawn even for text-icon themes.
+        let glyph = icons::icon(glyph, (edge * 0.42).round()).color(p.colors.on_accent);
+        iced::widget::container(glyph)
             .center_x(edge)
             .center_y(edge)
             .style(styles::liked_cover(p, self.cover_rounding() * edge))

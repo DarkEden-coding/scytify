@@ -19,6 +19,14 @@ use std::{
 /// actor from storage and settings; read whenever a session is created.
 static AUDIO_CACHE: Mutex<Option<(PathBuf, u64)>> = Mutex::new(None);
 
+/// Whether sessions created from now on continue with similar songs after a context ends.
+static AUTOPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Sets the autoplay preference for sessions created from now on.
+pub(crate) fn set_autoplay(enabled: bool) {
+    AUTOPLAY.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Configures the audio cache for sessions created from now on.
 pub(crate) fn set_audio_cache(dir: PathBuf, total_limit: u64) {
     *AUDIO_CACHE.lock().unwrap() = Some((dir, total_limit));
@@ -92,7 +100,7 @@ impl Playback {
         let config = SessionConfig {
             device_id,
             client_id: super::playback_auth::CLIENT_ID.into(),
-            autoplay: Some(false),
+            autoplay: Some(AUTOPLAY.load(std::sync::atomic::Ordering::Relaxed)),
             ..SessionConfig::default()
         };
         let session = Session::new(config, audio_cache());
@@ -148,6 +156,11 @@ impl Playback {
             event_clock,
             event_gate: Mutex::new(EventGate::default()),
         })
+    }
+
+    /// The connected session, for Spotify's internal recommendation and playlist services.
+    pub(crate) fn session(&self) -> Session {
+        self.session.clone()
     }
 
     /// Takes the sole player event receiver for integration into the backend select loop.

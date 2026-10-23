@@ -27,6 +27,7 @@ librespot-oauth = { version = "=0.8.0", default-features = false, features = ["r
 librespot-core = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 librespot-protocol = "=0.8.0"
+librespot-metadata = { version = "=0.8.0", default-features = false }
 librespot-connect = { version = "=0.8.0", default-features = false }
 librespot-playback = { version = "0.8.0", default-features = false, features = ["alsa-backend", "rustls-tls-native-roots"] }
 open = "5.3"

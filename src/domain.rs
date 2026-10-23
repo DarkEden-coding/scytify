@@ -245,6 +245,8 @@ pub struct AppState {
     pub cache_limit_bytes: u64,
     /// A Spicy Lyrics API key is stored; the key itself never leaves the backend.
     pub lyrics_key_set: bool,
+    /// Discover is playing and the backend keeps adding new recommendations.
+    pub discover_active: bool,
 }
 
 /// Backend validates ranges; default total cache limit is 1_000_000_000 bytes.
@@ -253,6 +255,14 @@ pub struct Settings {
     pub client_id: Option<String>,
     pub cache_limit_bytes: u64,
     pub theme_path: Option<std::path::PathBuf>,
+    /// Continue with similar songs when an album, playlist or track ends. Applies to the
+    /// next playback session.
+    #[serde(default = "enabled")]
+    pub autoplay: bool,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 /// Hydrated visible queue row; unavailable metadata does not erase the occurrence.

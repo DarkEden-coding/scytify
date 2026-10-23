@@ -1,5 +1,5 @@
 use super::actor::{Job, artwork, emit, load_current, login_ready, safe, sync_queue};
-use super::{api, auth, lyrics, playback, playback_auth, queue::Queue, storage};
+use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -187,8 +187,9 @@ pub(super) fn handle_command(
                 let client_changed = state.settings.client_id != s.client_id;
                 state.settings = s;
                 state.cache_limit_bytes = state.settings.cache_limit_bytes;
-                // A new audio budget applies to the next playback session.
+                // A new audio budget and autoplay choice apply to the next playback session.
                 playback::set_audio_cache(store.audio_dir(), state.cache_limit_bytes);
+                playback::set_autoplay(state.settings.autoplay);
                 store.measure_audio();
                 state.cache_used_bytes = store.used_bytes().unwrap_or(state.cache_used_bytes);
                 if client_changed {
@@ -423,6 +424,22 @@ pub(super) fn handle_command(
             if jobs.len() >= 4 {
                 return Some(Err(safe(ErrorKind::Unavailable, "backend is busy")));
             }
+            // Spotify-made playlists are only readable over the playback session.
+            if matches!(&query, Query::MadeForYou)
+                || matches!(&query, Query::PlaylistTracks { playlist_id } if discover::is_spotify_owned(playlist_id))
+            {
+                let Some(session) = player.as_ref().map(|p| p.session()) else {
+                    return Some(Err(safe(
+                        ErrorKind::Authentication,
+                        "Enable playback & Spotify Connect in Settings → Account to load Spotify's playlists",
+                    )));
+                };
+                let h = jobs.spawn(async move {
+                    Job::Response(id, discover::fetch(&session, &query, page).await)
+                });
+                handles.insert(id, h);
+                return None;
+            }
             let a = api.clone();
             let h = jobs.spawn(async move {
                 Job::Response(
@@ -625,6 +642,7 @@ pub(super) fn handle_command(
         }
         Action::SetVisible(_) => ok!(),
         Action::Quit
+        | Action::PlayDiscover
         | Action::TransferPlayback { .. }
         | Action::SetDeviceVolume { .. }
         | Action::RefreshDevices => unreachable!(),

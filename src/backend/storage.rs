@@ -27,6 +27,8 @@ impl Storage {
             .map_err(|e| e.to_string())?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v BLOB NOT NULL); CREATE TABLE IF NOT EXISTS cache(k TEXT PRIMARY KEY,path TEXT NOT NULL,size INTEGER NOT NULL,atime INTEGER NOT NULL);").map_err(|e| e.to_string())?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS lyrics_cache(track_id TEXT PRIMARY KEY, body BLOB NOT NULL, stored_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);").map_err(|e| e.to_string())?;
+        // Not a cache: Discover relies on it to skip songs heard before, so Clear cache keeps it.
+        db.execute_batch("CREATE TABLE IF NOT EXISTS listen_history(track_id TEXT PRIMARY KEY, last_heard INTEGER NOT NULL, plays INTEGER NOT NULL);").map_err(|e| e.to_string())?;
         let store = Self {
             root: root.to_owned(),
             db,
@@ -144,6 +146,31 @@ impl Storage {
                 [timestamp],
             )
             .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    /// Records that these tracks were heard, counting a play for each.
+    pub(crate) fn record_listens(&self, track_ids: &[SpotifyId]) -> Result<(), String> {
+        let timestamp = now();
+        for id in track_ids {
+            self.db
+                .execute(
+                    "INSERT INTO listen_history(track_id,last_heard,plays) VALUES(?1,?2,1) ON CONFLICT(track_id) DO UPDATE SET last_heard=excluded.last_heard,plays=plays+1",
+                    params![id.0, timestamp],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    /// Every track heard on this device, or seen in Spotify's recent plays.
+    pub(crate) fn heard_tracks(&self) -> Result<std::collections::HashSet<SpotifyId>, String> {
+        let mut statement = self
+            .db
+            .prepare("SELECT track_id FROM listen_history")
+            .map_err(|e| e.to_string())?;
+        statement
+            .query_map([], |r| r.get::<_, String>(0).map(SpotifyId))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())
     }
     /// Reads and touches a previously validated artwork cache entry.
@@ -273,6 +300,7 @@ pub(crate) fn default_settings() -> Settings {
         client_id: None,
         cache_limit_bytes: 1_000_000_000,
         theme_path: None,
+        autoplay: true,
     }
 }
 /// Checks persisted setting ranges and client-ID syntax.
@@ -357,6 +385,33 @@ mod tests {
         store.clear_cache().unwrap();
         assert_eq!(store.cached_lyrics(&track_id).unwrap(), None);
         assert!(store.get_json("settings").unwrap().is_some());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Listen history survives a restart and Clear cache, and repeat plays only count up.
+    #[test]
+    fn listen_history_persists_and_survives_clearing_the_cache() {
+        let root =
+            std::env::temp_dir().join(format!("custom-spotify-history-{}", rand::random::<u64>()));
+        let store = Storage::open_at(&root).unwrap();
+        let a = SpotifyId("0123456789012345678901".into());
+        let b = SpotifyId("1123456789012345678901".into());
+        store.record_listens(std::slice::from_ref(&a)).unwrap();
+        store.record_listens(&[a.clone(), b.clone()]).unwrap();
+        store.clear_cache().unwrap();
+        drop(store);
+        let store = Storage::open_at(&root).unwrap();
+        assert_eq!(store.heard_tracks().unwrap(), [a.clone(), b].into());
+        let plays: i64 = store
+            .db
+            .query_row(
+                "SELECT plays FROM listen_history WHERE track_id=?1",
+                [&a.0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(plays, 2);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

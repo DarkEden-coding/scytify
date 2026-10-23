@@ -3,6 +3,7 @@ mod api;
 mod auth;
 mod commands;
 mod connect;
+mod discover;
 mod lyrics;
 mod playback;
 mod playback_auth;
@@ -34,6 +35,7 @@ pub fn initial_state() -> AppState {
         cache_used_bytes: 0,
         cache_limit_bytes: 1_000_000_000,
         lyrics_key_set: false,
+        discover_active: false,
     }
 }
 

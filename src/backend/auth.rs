@@ -13,7 +13,7 @@ const SERVICE: &str = "dev.customspotify.CustomSpotify";
 const REDIRECT_PORT: u16 = 43817;
 /// Read-only permissions. Adding one requires existing users to sign in again; library
 /// endpoints report that as a Permission error instead of failing silently.
-const SCOPES: &str = "playlist-read-private playlist-read-collaborative user-read-private user-library-read streaming user-read-playback-state user-modify-playback-state user-read-currently-playing";
+const SCOPES: &str = "playlist-read-private playlist-read-collaborative user-read-private user-library-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state user-read-currently-playing";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Tokens {

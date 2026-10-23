@@ -121,6 +121,8 @@ enum Message {
     Maximized(bool),
     SetZoom(f32),
     SystemTitleBar(bool),
+    /// Continue with similar songs after a context ends; saved immediately.
+    SetAutoplay(bool),
     /// Show or hide the lyrics of the playing track in the main panel.
     Lyrics,
     /// Animation frame while lyrics are shown during playback.
@@ -196,6 +198,12 @@ struct Ui {
     shelf_pending: Option<RequestId>,
     /// The shelf request failed; Home shows that instead of retrying on every update.
     shelf_failed: bool,
+    /// Discover Weekly and Spotify's other mixes for the Home shelf, read over the
+    /// playback session once it is enabled.
+    mixes: Option<Vec<Playlist>>,
+    mixes_pending: Option<RequestId>,
+    /// Why the mixes could not be loaded; Home shows it instead of retrying.
+    mixes_failed: Option<String>,
     /// Liked Songs total, known once its page has loaded, for the sidebar subtitle.
     liked_count: Option<u64>,
     history: History,
@@ -341,6 +349,9 @@ impl Ui {
             shelf: None,
             shelf_pending: None,
             shelf_failed: false,
+            mixes: None,
+            mixes_pending: None,
+            mixes_failed: None,
             liked_count: None,
             history: History::default(),
             data: None,
@@ -481,6 +492,10 @@ impl Ui {
             self.cancel(shelf);
             self.shelf = None;
             self.shelf_failed = false;
+            let mixes = self.mixes_pending.take();
+            self.cancel(mixes);
+            self.mixes = None;
+            self.mixes_failed = None;
         }
         // An empty search shows the start page; the backend rejects empty text.
         if matches!(&self.query, Query::Search { text } if text.trim().is_empty()) {
@@ -561,6 +576,28 @@ impl Ui {
             },
         });
     }
+    /// Fetch the Made For You shelf while Home is visible, once playback is enabled: the
+    /// playback session is what can read Spotify's personalized playlists.
+    fn ensure_mixes(&mut self) {
+        if !self.home
+            || self.settings
+            || self.window.is_none()
+            || !matches!(self.state.auth, AuthState::Ready { .. })
+            || self.state.connect.playback_auth != PlaybackAuth::Ready
+            || self.mixes.is_some()
+            || self.mixes_pending.is_some()
+            || self.mixes_failed.is_some()
+        {
+            return;
+        }
+        self.mixes_pending = self.send(Action::Fetch {
+            query: Query::MadeForYou,
+            page: PageRequest {
+                offset: 0,
+                limit: SHELF_LIMIT,
+            },
+        });
+    }
     /// Request one revision-tagged queue page without replacing the library browser.
     fn fetch_queue(&mut self) {
         let previous = self.queue_pending.take();
@@ -625,6 +662,9 @@ impl Ui {
         self.shelf_pending = None;
         self.shelf = None;
         self.shelf_failed = false;
+        self.mixes_pending = None;
+        self.mixes = None;
+        self.mixes_failed = None;
         self.liked_count = None;
         self.sidebar_pending = None;
         self.sidebar_more = None;
@@ -676,6 +716,7 @@ impl Ui {
         if old.client_id == settings.client_id
             && old.cache_limit_bytes == settings.cache_limit_bytes
             && old.theme_path == settings.theme_path
+            && old.autoplay == settings.autoplay
         {
             return;
         }
@@ -817,6 +858,7 @@ impl Ui {
     fn update(&mut self, message: Message) -> Task<Message> {
         let task: Task<Message> = self.reduce(message);
         self.ensure_shelf();
+        self.ensure_mixes();
         self.fetch_artwork();
         if self.notice.is_empty() {
             self.notice_shown = None;
@@ -1027,8 +1069,12 @@ impl Ui {
                         if self.shelf_pending == Some(id) && !early {
                             self.shelf_failed = true;
                         }
+                        if self.mixes_pending == Some(id) && !early {
+                            self.mixes_failed = Some(e.message.clone());
+                        }
                         for slot in [
                             &mut self.shelf_pending,
+                            &mut self.mixes_pending,
                             &mut self.sidebar_pending,
                             &mut self.sidebar_more,
                             &mut self.pending,
@@ -1336,6 +1382,11 @@ impl Ui {
                     self.show_notice(format!("Could not open the link: {e}"));
                 }
             }
+            Message::SetAutoplay(enabled) => {
+                let mut settings: crate::domain::Settings = self.state.settings.clone();
+                settings.autoplay = enabled;
+                self.send(Action::Configure(settings));
+            }
             Message::Client(s) => self.client = s,
             Message::Cache(s) => self.cache = s,
             Message::ThemePath(s) => self.theme_path = s,
@@ -1416,7 +1467,13 @@ impl Ui {
     }
     /// Route a page completion to the sidebar, shelf, queue or browser it belongs to.
     fn complete_page(&mut self, id: RequestId, data: PageData) {
-        if self.shelf_pending == Some(id) {
+        if self.mixes_pending == Some(id) {
+            self.mixes_pending = None;
+            match data {
+                PageData::Playlists(page) => self.mixes = Some(page.items),
+                _ => self.mixes_failed = Some("Unexpected response".into()),
+            }
+        } else if self.shelf_pending == Some(id) {
             self.shelf_pending = None;
             match data {
                 PageData::Albums(page) => self.shelf = Some(page),
@@ -1782,7 +1839,13 @@ impl Ui {
             }
         };
         if self.home {
-            return block(len.min(self.grid_layout().columns), self.shelf_height());
+            // The Made For You shelf is above the playlist shelf.
+            let shelf: f32 = self.shelf_height();
+            return if self.on_screen(shelf, shelf) {
+                (0, len.min(self.grid_layout().columns))
+            } else {
+                (0, 0)
+            };
         }
         let offset: f32 = self.scroll - self.content_top(data);
         match data {
@@ -1938,6 +2001,7 @@ mod channel_tests {
                 client_id: Some("public-client".into()),
                 cache_limit_bytes: 123_000_000,
                 theme_path: None,
+                autoplay: true,
             },
             auth: AuthState::SignedOut,
             player: PlayerState {
@@ -1956,6 +2020,7 @@ mod channel_tests {
             cache_used_bytes: 0,
             cache_limit_bytes: 123_000_000,
             lyrics_key_set: false,
+            discover_active: false,
         };
         let (front, back): (FrontendPort, BackendPort) = channels(initial);
         let (ui, _task): (Ui, Task<Message>) = Ui::boot(front);

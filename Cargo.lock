@@ -950,6 +950,7 @@ dependencies = [
  "keyring",
  "librespot-connect",
  "librespot-core",
+ "librespot-metadata",
  "librespot-oauth",
  "librespot-playback",
  "librespot-protocol",

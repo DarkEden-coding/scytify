@@ -115,11 +115,30 @@ transfer or queue edit, restart restoration is limited to the available preview;
 the live Connect queue itself remains owned by Spirc.
 
 Web API OAuth scopes are `playlist-read-private playlist-read-collaborative user-read-private
-user-library-read streaming user-read-playback-state user-modify-playback-state
+user-library-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state
 user-read-currently-playing`. Tokens from earlier versions must be replaced by
 signing out and signing in again. Library and playback 403 responses return a
 Permission error with reauthorization instructions. Premium and developer-app
 allowlisting are still required.
+
+### Recommendations and Spotify-made playlists
+
+Development-mode apps cannot use `/v1/recommendations` or read Spotify-owned playlists
+(IDs starting `37i9dQZ`). These features use internal endpoints over the librespot
+session instead, so they need playback consent and may change without notice:
+
+- Made For You (`Query::MadeForYou`) reads `/homeview/v1/home` and keeps the playlist cards
+  under "Made For …" plus Discover Weekly. Tracks of any Spotify-owned playlist come from
+  `context-resolve`, with metadata from librespot-metadata.
+- Autoplay is the session's `autoplay` setting (Settings → Playback). Spirc fetches similar
+  songs when a context ends. A change applies to the next playback session.
+- Discover (`Action::PlayDiscover`) builds batches from Liked Songs autoplay and radio
+  stations seeded with random liked songs. It skips liked songs, tracks played this run, the
+  local `listen_history` table and the Web API's last 50 recent plays, which it also stores.
+  A track counts as heard after 30 seconds, or half of a shorter track, of observed playback
+  on any device. Clear cache keeps this history. When fewer than five Discover tracks are
+  coming up, the next batch is added through the Web API queue. Playing anything else ends
+  Discover.
 
 ### Connect observation and official control
 

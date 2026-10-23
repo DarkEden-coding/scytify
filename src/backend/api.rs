@@ -271,6 +271,21 @@ impl Api {
         }
     }
 
+    /// The account's last 50 played tracks on any device, newest first. Tokens from before
+    /// the `user-read-recently-played` scope get a Permission error.
+    pub(super) async fn recently_played(&self, token: &str) -> Result<Vec<SpotifyId>, AppError> {
+        let v = self
+            .get_json(token, "me/player/recently-played?limit=50")
+            .await?;
+        Ok(v["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| parse_track(&item["track"]))
+            .map(|track| track.id)
+            .collect())
+    }
+
     /// Current playlist revision, compared before and after gathering its membership.
     async fn playlist_snapshot(&self, token: &str, id: &SpotifyId) -> Result<String, AppError> {
         let v = self
@@ -424,6 +439,12 @@ impl Api {
                 page_limit,
             ),
             Query::Queue { .. } => return Err(err(ErrorKind::InvalidInput, "queue is local")),
+            Query::MadeForYou => {
+                return Err(err(
+                    ErrorKind::InvalidInput,
+                    "Made For You is read over the playback session",
+                ));
+            }
         };
         let sep = if path.contains('?') { '&' } else { '?' };
         let mut v = self

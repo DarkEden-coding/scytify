@@ -526,6 +526,7 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
                 }
                 Query::LikedTracks => PageData::Tracks(listing(&catalog.liked, request)),
                 Query::SavedAlbums => PageData::Albums(page(&catalog.saved_albums, request)),
+                Query::MadeForYou => PageData::Playlists(page(&catalog.playlists, request)),
                 Query::Search { text } => PageData::Search(catalog.search(&text)),
                 Query::SearchArtists { text } => {
                     PageData::Artists(search_page(&catalog.search_artists(&text), request))
@@ -565,6 +566,11 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
             }
             Action::Pause => {
                 state.player.status = PlaybackStatus::Paused;
+                Response::Accepted
+            }
+            Action::PlayDiscover => {
+                state.player.status = PlaybackStatus::Playing;
+                state.discover_active = true;
                 Response::Accepted
             }
             Action::Resume | Action::Play(_) => {

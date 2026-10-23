@@ -145,6 +145,7 @@ impl Preferences {
             }
             "liked" => Query::LikedTracks,
             "saved-albums" => Query::SavedAlbums,
+            "made-for-you" => Query::MadeForYou,
             _ => Query::OwnPlaylists,
         };
         // "library" (also written by older versions) is Home; "playlists" its full grid.
@@ -219,6 +220,7 @@ impl Preferences {
             | Query::SearchTracks { text } => ("search", text.clone()),
             Query::LikedTracks => ("liked", String::new()),
             Query::SavedAlbums => ("saved-albums", String::new()),
+            Query::MadeForYou => ("made-for-you", String::new()),
             Query::OwnPlaylists if !ui.home => ("playlists", String::new()),
             _ => ("library", String::new()),
         };

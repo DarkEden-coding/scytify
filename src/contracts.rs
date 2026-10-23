@@ -65,6 +65,9 @@ pub enum Query {
     Queue {
         revision: u64,
     },
+    /// Spotify's personalized playlists (Discover Weekly, Release Radar, Daily Mixes), read
+    /// from the home feed over the playback session. One non-paged `PageData::Playlists`.
+    MadeForYou,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +126,9 @@ pub enum Action {
     },
     CancelRequest(RequestId),
     Play(PlaySource),
+    /// Endless recommendations, skipping liked songs and tracks heard before. Needs the
+    /// playback session; the backend keeps the queue topped up while it plays.
+    PlayDiscover,
     Resume,
     Pause,
     Next,

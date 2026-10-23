@@ -1,4 +1,4 @@
-use super::{api, auth, lyrics, playback, playback_auth, queue::Queue, storage};
+use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -58,6 +58,13 @@ pub(super) enum Job {
         Result<super::transfer::LocalTransfer, AppError>,
     ),
     ObservedMetadata(u64, Result<Vec<Track>, AppError>),
+    /// A Discover batch: the first one answers its request, refills have none.
+    Discover(
+        Option<RequestId>,
+        u64,
+        u64,
+        Result<discover::Batch, AppError>,
+    ),
 }
 
 /// Runs the responsive mutable backend owner. Network/auth/session jobs are cancellable and
@@ -67,6 +74,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     let settings = store
         .settings()
         .map_err(|e| safe(ErrorKind::Internal, &e))?;
+    playback::set_autoplay(settings.autoplay);
     let mut q = match store.session().map_err(|e| safe(ErrorKind::Internal, &e))? {
         Some(s) => Queue::restore(s, rand::random()).map_err(|e| safe(ErrorKind::Internal, e))?,
         None => Queue::empty(rand::random()),
@@ -127,6 +135,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     let mut observation_tick = tokio::time::interval(std::time::Duration::from_millis(100));
     observation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut polling = super::remote::Polling::new();
+    let mut discovery = discover::State::default();
 
     let mut logged_auth = (String::new(), PlaybackAuth::default());
     loop {
@@ -198,8 +207,16 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     playback::advance_anchor(&mut state.player, std::time::Instant::now());
                     q.snapshot.position_ms = state.player.position_ms;
                 }
-                let result = super::commands::handle_command(command.action, id, auth_epoch, &api, &mut lyrics, &store, &mut q, &mut state,
-                    &mut tokens, &mut player, &mut player_events, &metadata, &mut jobs, &mut art_jobs, &mut handles, &mut cancelled, &mut login_ids, &port.events);
+                if invalidates_auth || matches!(command.action, Action::Play(_) | Action::PlayDiscover | Action::Logout) {
+                    discovery.stop();
+                    state.discover_active = false;
+                }
+                let result = if matches!(command.action, Action::PlayDiscover) {
+                    start_discover(id, auth_epoch, &discovery, &api, &store, &state, &tokens, &player, &mut jobs, &mut handles)
+                } else {
+                    super::commands::handle_command(command.action, id, auth_epoch, &api, &mut lyrics, &store, &mut q, &mut state,
+                        &mut tokens, &mut player, &mut player_events, &metadata, &mut jobs, &mut art_jobs, &mut handles, &mut cancelled, &mut login_ids, &port.events)
+                };
                 if let Some(result) = result { emit(&port.events, Event::Completed { id, result }); }
                 if persist { checkpoint(&store, &q, &port.events); }
                 let _ = port.state.send(state.clone());
@@ -207,7 +224,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
             Some(joined) = jobs.join_next(), if !jobs.is_empty() => {
                 if let Ok(job) = joined {
                     finish_job(job, auth_epoch, &store, &port.events, &mut q, &mut state, &mut tokens, &mut player,
-                        &mut player_events, &mut metadata, &mut jobs, &mut handles, &mut cancelled, &mut polling);
+                        &mut player_events, &mut metadata, &mut jobs, &mut handles, &mut cancelled, &mut polling, &mut discovery);
                     if background_auth.as_ref().is_some_and(|h| h.is_finished()) { background_auth = None; }
                     let _ = port.state.send(state.clone());
                 }
@@ -215,11 +232,14 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
             Some(joined) = art_jobs.join_next(), if !art_jobs.is_empty() => {
                 if let Ok(job) = joined {
                     finish_job(job, auth_epoch, &store, &port.events, &mut q, &mut state, &mut tokens, &mut player,
-                        &mut player_events, &mut metadata, &mut jobs, &mut handles, &mut cancelled, &mut polling);
+                        &mut player_events, &mut metadata, &mut jobs, &mut handles, &mut cancelled, &mut polling, &mut discovery);
                     let _ = port.state.send(state.clone());
                 }
             }
             _ = observation_tick.tick() => {
+                if follow_discovery(auth_epoch, &mut discovery, &api, &store, &q, &mut state, &tokens, &player, &mut jobs) {
+                    let _ = port.state.send(state.clone());
+                }
                 let mut live = None;
                 let mut healthy = false;
                 let mut spirc = false;
@@ -326,8 +346,120 @@ fn finish_job(
     handles: &mut HashMap<RequestId, tokio::task::AbortHandle>,
     cancelled: &mut HashSet<RequestId>,
     polling: &mut super::remote::Polling,
+    discovery: &mut discover::State,
 ) {
     match job {
+        Job::Discover(id, epoch, generation, result) => {
+            if let Some(id) = id {
+                handles.remove(&id);
+                if cancelled.remove(&id) {
+                    return;
+                }
+            }
+            if epoch != auth_epoch || generation != discovery.generation {
+                if let Some(id) = id {
+                    let error = safe(
+                        ErrorKind::StaleQueue,
+                        "playback changed while Discover was loading",
+                    );
+                    emit(
+                        events,
+                        Event::Completed {
+                            id,
+                            result: Err(error),
+                        },
+                    );
+                }
+                return;
+            }
+            let batch = match result {
+                Ok(batch) => batch,
+                Err(error) => {
+                    match (id, discovery.run.as_mut()) {
+                        (Some(id), _) => emit(
+                            events,
+                            Event::Completed {
+                                id,
+                                result: Err(error),
+                            },
+                        ),
+                        (None, Some(run)) => {
+                            log::warn!("Discover batch failed: {}", error.message);
+                            run.batch_failed(std::time::Instant::now());
+                        }
+                        (None, None) => {}
+                    }
+                    return;
+                }
+            };
+            match &batch.recent {
+                Ok(recent) => {
+                    if let Err(error) = store.record_listens(recent) {
+                        log::warn!("could not record recent plays: {error}");
+                    }
+                }
+                Err(error) if id.is_some() && error.kind == ErrorKind::Permission => emit(
+                    events,
+                    Event::Notice(safe(
+                        ErrorKind::Permission,
+                        "Sign out and in again so Discover can also skip songs you recently played on other devices.",
+                    )),
+                ),
+                Err(_) => {}
+            }
+            let ids: Vec<SpotifyId> = batch.tracks.iter().map(|t| t.id.clone()).collect();
+            insert_metadata(
+                metadata,
+                batch.tracks.clone(),
+                state.player.current.as_ref().map(|t| &t.id),
+            );
+            let Some(id) = id else {
+                // Refill: Connect playback already queued the batch on its device.
+                if let Some(run) = discovery.run.as_mut() {
+                    run.refilling = false;
+                    run.served.extend(ids.iter().cloned());
+                    if !follows_connect(state, player) && q.enqueue(ids, false).is_ok() {
+                        sync_queue(state, q);
+                        checkpoint(store, q, events);
+                    }
+                }
+                return;
+            };
+            let result = if let Some(connect) = player.as_ref().and_then(|p| p.connect.as_ref()) {
+                connect
+                    .load(ids, 0, 0, true)
+                    .map_err(|e| safe(ErrorKind::Unavailable, &e))
+            } else {
+                let mut candidate = q.clone();
+                candidate
+                    .activate(SpotifyId("discover".into()), "discover".into(), ids, 0)
+                    .map_err(|e| safe(ErrorKind::InvalidInput, e))
+                    .map(|()| {
+                        *q = candidate;
+                        checkpoint(store, q, events);
+                        state.player.current = q
+                            .snapshot
+                            .current
+                            .as_ref()
+                            .and_then(|e| metadata.get(&e.track_id))
+                            .cloned();
+                        load_current(q, state, player, true);
+                    })
+            };
+            if result.is_ok() {
+                sync_queue(state, q);
+                state.player.status = PlaybackStatus::Loading;
+                discovery.run = Some(discover::Run::new(&batch.tracks));
+                state.discover_active = true;
+            }
+            emit(
+                events,
+                Event::Completed {
+                    id,
+                    result: result.map(|()| Response::Accepted),
+                },
+            );
+        }
         Job::RemotePoll(epoch, revision, result) => {
             if epoch != auth_epoch {
                 return;
@@ -891,6 +1023,170 @@ fn finish_job(
     }
 }
 
+/// Starts Discover: gathers the first batch over the playback session, then plays it.
+#[allow(clippy::too_many_arguments)]
+fn start_discover(
+    id: RequestId,
+    auth_epoch: u64,
+    discovery: &discover::State,
+    api: &api::Api,
+    store: &storage::Storage,
+    state: &AppState,
+    tokens: &Option<auth::Tokens>,
+    player: &Option<playback::Playback>,
+    jobs: &mut JoinSet<Job>,
+    handles: &mut HashMap<RequestId, tokio::task::AbortHandle>,
+) -> Option<Result<Response, AppError>> {
+    let Some(session) = player.as_ref().map(|p| p.session()) else {
+        return Some(Err(safe(
+            ErrorKind::Authentication,
+            "Enable playback & Spotify Connect in Settings → Account to use Discover",
+        )));
+    };
+    if !matches!(state.auth, AuthState::Ready { .. }) {
+        return Some(Err(safe(ErrorKind::Authentication, "sign in first")));
+    }
+    if jobs.len() >= 4 {
+        return Some(Err(safe(ErrorKind::Unavailable, "backend is busy")));
+    }
+    let heard = match store.heard_tracks() {
+        Ok(heard) => heard,
+        Err(error) => return Some(Err(safe(ErrorKind::Internal, &error))),
+    };
+    let request = DiscoverRequest {
+        api: api.clone(),
+        session,
+        token: tokens.as_ref().map(|t| t.access_token.clone()),
+        exclude: heard,
+        size: discover::FIRST_BATCH,
+        queue_on: None,
+    };
+    let generation = discovery.generation;
+    let h = jobs
+        .spawn(async move { Job::Discover(Some(id), auth_epoch, generation, request.run().await) });
+    handles.insert(id, h);
+    None
+}
+
+/// Records heard tracks and keeps a playing Discover session supplied. Returns whether the
+/// published state changed.
+#[allow(clippy::too_many_arguments)]
+fn follow_discovery(
+    auth_epoch: u64,
+    discovery: &mut discover::State,
+    api: &api::Api,
+    store: &storage::Storage,
+    q: &Queue,
+    state: &mut AppState,
+    tokens: &Option<auth::Tokens>,
+    player: &Option<playback::Playback>,
+    jobs: &mut JoinSet<Job>,
+) -> bool {
+    let now = std::time::Instant::now();
+    if let Some(heard) = discovery
+        .listening
+        .observe(&state.player, playback::position_at(&state.player, now))
+        && let Err(error) = store.record_listens(&[heard])
+    {
+        log::warn!("could not record a heard track: {error}");
+    }
+    let Some(run) = discovery.run.as_mut() else {
+        return false;
+    };
+    if !run.observe(state.player.current.as_ref().map(|t| &t.id)) {
+        discovery.stop();
+        state.discover_active = false;
+        return true;
+    }
+    let connect = follows_connect(state, player);
+    let upcoming: Vec<&SpotifyId> = if connect {
+        state.connect.queue_preview.iter().map(|t| &t.id).collect()
+    } else {
+        q.snapshot
+            .explicit_queue
+            .iter()
+            .chain(q.snapshot.remaining.iter())
+            .map(|e| &e.track_id)
+            .collect()
+    };
+    if jobs.len() >= 4 || !run.needs_more(upcoming.into_iter(), now) {
+        return false;
+    }
+    let (Some(session), Some(token)) = (player.as_ref().map(|p| p.session()), tokens.as_ref())
+    else {
+        return false;
+    };
+    let mut exclude = match store.heard_tracks() {
+        Ok(heard) => heard,
+        Err(error) => {
+            log::warn!("could not read listen history: {error}");
+            return false;
+        }
+    };
+    exclude.extend(run.served.iter().cloned());
+    // Connect playback is queued through the Web API on whichever device plays it.
+    let queue_on = connect.then(|| {
+        state
+            .connect
+            .active_device_id
+            .clone()
+            .or_else(|| state.connect.this_device_id.clone())
+    });
+    let request = DiscoverRequest {
+        api: api.clone(),
+        session,
+        token: Some(token.access_token.clone()),
+        exclude,
+        size: discover::REFILL_BATCH,
+        queue_on,
+    };
+    run.refilling = true;
+    let generation = discovery.generation;
+    jobs.spawn(async move { Job::Discover(None, auth_epoch, generation, request.run().await) });
+    false
+}
+
+/// Whether Spotify Connect, rather than the local fallback queue, owns what plays.
+fn follows_connect(state: &AppState, player: &Option<playback::Playback>) -> bool {
+    state.connect.is_remote() || player.as_ref().is_some_and(|p| p.connect.is_some())
+}
+
+/// Everything one Discover batch job needs, moved into its task.
+struct DiscoverRequest {
+    api: api::Api,
+    session: librespot_core::Session,
+    token: Option<String>,
+    /// Heard and already queued tracks.
+    exclude: HashSet<SpotifyId>,
+    size: usize,
+    /// Connect device whose queue receives the batch; `None` for the first batch, which
+    /// is loaded as a whole, and for the local fallback queue.
+    queue_on: Option<Option<String>>,
+}
+
+impl DiscoverRequest {
+    async fn run(mut self) -> Result<discover::Batch, AppError> {
+        let recent = match &self.token {
+            Some(token) => self.api.recently_played(token).await,
+            None => Ok(Vec::new()),
+        };
+        let liked = discover::liked_tracks(&self.session).await?;
+        self.exclude.extend(liked.iter().cloned());
+        if let Ok(recent) = &recent {
+            self.exclude.extend(recent.iter().cloned());
+        }
+        let tracks =
+            discover::fresh_tracks(&self.session, &liked, &self.exclude, self.size).await?;
+        if let (Some(device), Some(token)) = (&self.queue_on, &self.token) {
+            let ids = tracks.iter().map(|t| t.id.clone()).collect();
+            self.api
+                .control(token, device.as_deref(), &Action::AddToQueue(ids))
+                .await?;
+        }
+        Ok(discover::Batch { tracks, recent })
+    }
+}
+
 /// Persists successful authorization and installs any connected player.
 #[allow(
     clippy::too_many_arguments,
@@ -1331,7 +1627,9 @@ fn validate_artwork_url(u: &url::Url) -> Result<(), AppError> {
     let host = u.host_str().unwrap_or("");
     if u.scheme() != "https"
         || u.port().is_some()
-        || !(host == "i.scdn.co" || host.ends_with(".scdn.co"))
+        || !(host == "i.scdn.co"
+            || host.ends_with(".scdn.co")
+            || super::discover::MIX_ART_HOSTS.contains(&host))
     {
         Err(safe(ErrorKind::InvalidInput, "artwork host is not allowed"))
     } else {
@@ -1508,6 +1806,10 @@ mod regression_tests {
             .is_err()
         );
         assert!(validate_artwork_url(&url::Url::parse("https://i.scdn.co/a").unwrap()).is_ok());
+        assert!(
+            validate_artwork_url(&url::Url::parse("https://pickasso.spotifycdn.com/a").unwrap())
+                .is_ok()
+        );
     }
     #[tokio::test]
     async fn saturated_event_queue_still_delivers_quit_terminal_events_in_order() {
