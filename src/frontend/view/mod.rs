@@ -20,6 +20,8 @@ use iced::{Alignment, Length};
 
 /// Height of the now-playing bar.
 const PLAYER_HEIGHT: f32 = 80.0;
+/// Space between a notice and the player bar below it.
+const TOAST_GAP: f32 = 12.0;
 
 /// Make wheel ticks over a scrollable glide instead of stepping.
 fn smooth_wheel<'a>(scroll: impl Into<Element<'a>>, area: Area) -> Element<'a> {
@@ -53,32 +55,31 @@ impl Ui {
             window = window.push(banner);
         }
         let mut layers = stack![window];
-        if self.devices {
-            layers = layers.push(self.devices_overlay());
-        }
-        self.with_resize_grips(layers.into())
-    }
-
-    /// Top bar and the scrolling page inside one surface panel, with notices above it.
-    fn main_view(&self) -> Element<'_> {
-        let page: Element<'_> = if self.settings {
-            self.settings_view()
-        } else {
-            self.browser_view()
-        };
-        let panel = self.panel(column![self.top_bar(), page].height(Length::Fill), 0.0);
-        let mut layers = stack![panel].width(Length::Fill).height(Length::Fill);
         if !self.notice.is_empty() {
+            // Centered over the whole window, floating just above the player bar.
             layers = layers.push(
                 container(self.toast())
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(Alignment::Center)
                     .align_y(Alignment::End)
-                    .padding(layout::CONTENT_PADDING),
+                    .padding(iced::Padding::ZERO.bottom(PLAYER_HEIGHT + edge + TOAST_GAP)),
             );
         }
-        layers.into()
+        if self.devices {
+            layers = layers.push(self.devices_overlay());
+        }
+        self.with_resize_grips(layers.into())
+    }
+
+    /// Top bar and the scrolling page inside one surface panel.
+    fn main_view(&self) -> Element<'_> {
+        let page: Element<'_> = if self.settings {
+            self.settings_view()
+        } else {
+            self.browser_view()
+        };
+        self.panel(column![self.top_bar(), page].height(Length::Fill), 0.0)
     }
 
     /// Dismissible notice for errors and warnings.
@@ -91,11 +92,11 @@ impl Ui {
             content = content.push(icons::icon(Icon::Alert, 18.0).color(p.colors.error));
         }
         content = content
-            .push(self.label(&self.notice).width(Length::Fill))
-            .push(self.icon_button(Icon::Close, 16.0, false, Message::DismissNotice));
+            .push(self.label(&self.notice).wrapping(Wrapping::WordOrGlyph))
+            .push(self.icon_button(Icon::Close, 14.0, false, Message::DismissNotice));
         container(content)
-            .max_width(560)
-            .padding([10.0, p.shape.padding])
+            .max_width(520)
+            .padding(iced::Padding::from([8.0, p.shape.padding]).right(8.0))
             .style(styles::toast(p))
             .into()
     }

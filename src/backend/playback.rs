@@ -1,5 +1,5 @@
 use librespot_core::{
-    SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session,
+    SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
     spotify_id::SpotifyId as LibrespotId,
 };
 use librespot_playback::{
@@ -9,9 +9,33 @@ use librespot_playback::{
     player::{Player, PlayerEvent, PlayerEventChannel},
 };
 use std::{
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+/// Where sessions cache audio and the total cache limit it shares with artwork. Set by the
+/// actor from storage and settings; read whenever a session is created.
+static AUDIO_CACHE: Mutex<Option<(PathBuf, u64)>> = Mutex::new(None);
+
+/// Configures the audio cache for sessions created from now on.
+pub(crate) fn set_audio_cache(dir: PathBuf, total_limit: u64) {
+    *AUDIO_CACHE.lock().unwrap() = Some((dir, total_limit));
+}
+
+/// librespot cache holding only encrypted audio files, so replays and repeated tracks start
+/// from disk. Credentials and volume stay out of it; credentials live in the Secret Service.
+fn audio_cache() -> Option<Cache> {
+    let (dir, total) = AUDIO_CACHE.lock().unwrap().clone()?;
+    Cache::new(
+        None,
+        None,
+        Some(dir),
+        Some(super::storage::audio_budget(total)),
+    )
+    .map_err(|e| log::warn!("audio cache unavailable: {e}"))
+    .ok()
+}
 
 /// Connected local decoder/output plus its software volume control.
 pub(crate) struct Playback {
@@ -69,7 +93,7 @@ impl Playback {
             autoplay: Some(false),
             ..SessionConfig::default()
         };
-        let session = Session::new(config, None);
+        let session = Session::new(config, audio_cache());
         let mut guard = SessionGuard(Some(session.clone()));
         let mixer =
             mixer::find(None).ok_or("no software mixer was compiled")?(MixerConfig::default())

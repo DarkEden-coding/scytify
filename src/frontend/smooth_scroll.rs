@@ -20,6 +20,9 @@ const STREAK_GAP: Duration = Duration::from_millis(150);
 const ACCELERATION: f32 = 0.4;
 /// Fastest step, in lines per tick.
 const MAX_SPEED: f32 = 5.0;
+/// Most of a viewport one frame may move. Rows are built for the previous frame's offset
+/// with one viewport of overscan, so a larger step would briefly show blank space.
+const MAX_FRAME_STEP: f32 = 0.6;
 
 /// Scroll areas that glide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +76,8 @@ struct Glide {
     observed: f32,
     /// Largest offset seen reported; unknown until the area has scrolled once.
     max: Option<f32>,
+    /// Viewport height last reported.
+    height: f32,
     /// Eased offset sent to the scrollable while animating.
     pos: f32,
     target: Option<f32>,
@@ -85,6 +90,7 @@ impl Glide {
     fn observe(&mut self, m: Metrics) {
         self.observed = m.y;
         self.max = Some(m.max);
+        self.height = m.height;
         if let Some(target) = self.target.as_mut() {
             *target = target.min(m.max);
         }
@@ -126,7 +132,13 @@ impl Glide {
             self.pos = target;
             self.target = None;
         } else {
-            self.pos += gap * (1.0 - (-dt.as_secs_f32() / TAU.as_secs_f32()).exp());
+            let step: f32 = gap * (1.0 - (-dt.as_secs_f32() / TAU.as_secs_f32()).exp());
+            let limit: f32 = MAX_FRAME_STEP * self.height;
+            self.pos += if limit > 0.0 {
+                step.clamp(-limit, limit)
+            } else {
+                step
+            };
         }
         Some(self.pos)
     }
@@ -398,6 +410,20 @@ mod tests {
         glide.wheel(500.0, slow());
         glide.observe(metrics(0.0, 200.0));
         assert_eq!(glide.target, Some(200.0));
+    }
+
+    /// A long accelerated flick never jumps past the overscanned rows in one frame.
+    #[test]
+    fn one_frame_moves_less_than_a_viewport() {
+        let mut glide = Glide::default();
+        glide.observe(metrics(0.0, 100_000.0));
+        glide.wheel(20_000.0, slow());
+        let mut last: f32 = 0.0;
+        for _ in 0..10 {
+            let y: f32 = glide.advance(Duration::from_millis(16)).unwrap();
+            assert!(y - last <= MAX_FRAME_STEP * 600.0 + 0.01);
+            last = y;
+        }
     }
 
     #[test]

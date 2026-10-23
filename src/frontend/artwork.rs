@@ -1,10 +1,11 @@
-//! Visible-only artwork requests and a 24 MiB decoded cache.
+//! Visible-only artwork requests and a 48 MiB decoded cache.
 //!
 //! The update loop calls `fetch_artwork` after every message. It derives the wanted URLs from
 //! what is on screen (player, page header, the virtualized browser, sidebar and queue windows),
 //! cancels requests that scrolled away, and keeps at most `ARTWORK_IN_FLIGHT` requests pending.
 //! Corners are rounded while decoding because the software renderer ignores image radii.
-//! Decoding also records the cover's dominant color for the page header tint.
+//! Decoding also records the cover's dominant color for the page header tint. It runs on the
+//! blocking pool, so covers arriving while scrolling never stall a frame.
 use super::layout::{SIDEBAR_ROW, visible_rows};
 use super::tint;
 use super::*;
@@ -12,8 +13,8 @@ use iced::widget::image::Handle;
 use std::collections::VecDeque;
 
 const EDGE_PX: u16 = 160;
-const MAX_DECODED_BYTES: usize = 24 * 1024 * 1024;
-const MAX_ENTRIES: usize = 256;
+const MAX_DECODED_BYTES: usize = 48 * 1024 * 1024;
+const MAX_ENTRIES: usize = 512;
 const MAX_FAILED: usize = 64;
 
 /// How a cover is cut: album and playlist art gets the theme's rounded corners, artists a circle.
@@ -21,6 +22,15 @@ const MAX_FAILED: usize = 64;
 pub(super) enum Shape {
     Cover,
     Round,
+}
+
+/// Indices of an overscanned row window, those on screen first. The window extends one
+/// viewport above and two below, so the screen starts about a third of the way in.
+fn nearest_first(start: usize, end: usize) -> impl Iterator<Item = usize> {
+    let focus: usize = start + (end - start) / 3;
+    let mut indices: Vec<usize> = (start..end).collect();
+    indices.sort_by_key(|&i| i.abs_diff(focus));
+    indices.into_iter()
 }
 
 /// Fade pixels outside a rounded rectangle to transparent, with one pixel of antialiasing.
@@ -41,7 +51,8 @@ fn round_corners(pixels: &mut image::RgbaImage, rounding: f32) {
 }
 
 /// One decoded cover: the image, its decoded size and the header tint taken from it.
-struct Decoded {
+#[derive(Clone, Debug)]
+pub(super) struct Decoded {
     handle: Handle,
     size: usize,
     tint: Option<iced::Color>,
@@ -53,6 +64,8 @@ pub(super) struct Artwork {
     /// Eviction order, oldest first. Wanted entries move to the back, so visible art survives.
     order: VecDeque<String>,
     pending: HashMap<RequestId, (String, Shape)>,
+    /// Covers that arrived and are being decoded off the UI thread.
+    decoding: HashSet<String>,
     failed: VecDeque<String>,
     bytes: usize,
 }
@@ -66,7 +79,7 @@ impl Artwork {
         self.entries.get(url).and_then(|e| e.tint)
     }
     fn is_pending(&self, url: &str) -> bool {
-        self.pending.values().any(|(u, _)| u == url)
+        self.decoding.contains(url) || self.pending.values().any(|(u, _)| u == url)
     }
     /// Mark a cached URL as recently wanted.
     fn touch(&mut self, url: &str) {
@@ -197,9 +210,8 @@ impl Ui {
                             .map(cover),
                     ),
                     PageData::Tracks(p) => urls.extend(
-                        p.items[start..end]
-                            .iter()
-                            .filter_map(Track::artwork_url)
+                        nearest_first(start, end)
+                            .filter_map(|i| p.items[i].artwork_url())
                             .map(cover),
                     ),
                     PageData::Queue { page, .. } => urls.extend(
@@ -351,24 +363,43 @@ impl Ui {
             }
         }
     }
-    /// Consume an artwork completion. Failures are suppressed silently: the placeholder is
-    /// the visible result, and a bounded failed list prevents request loops.
-    pub(super) fn complete_artwork(&mut self, id: RequestId, bytes: Option<Vec<u8>>) -> bool {
-        let Some((url, shape)) = self.artwork.pending.remove(&id) else {
-            return false;
+    /// Consume an artwork completion; `None` if the request was not (or no longer) ours.
+    /// Bytes are decoded on the blocking pool and land through `artwork_decoded`. Failures
+    /// are suppressed silently: the placeholder is the visible result, and a bounded failed
+    /// list prevents request loops.
+    pub(super) fn complete_artwork(
+        &mut self,
+        id: RequestId,
+        bytes: Option<Vec<u8>>,
+    ) -> Option<Task<Message>> {
+        let (url, shape) = self.artwork.pending.remove(&id)?;
+        let Some(bytes) = bytes else {
+            self.artwork.fail(url);
+            return Some(Task::none());
         };
         let rounding: f32 = match shape {
             Shape::Cover => self.cover_rounding(),
             Shape::Round => 0.5,
         };
-        match bytes
-            .ok_or_else(|| "Artwork unavailable".to_string())
-            .and_then(|b| Artwork::decode(b, rounding))
-        {
+        self.artwork.decoding.insert(url.clone());
+        Some(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || Artwork::decode(bytes, rounding))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            move |decoded| Message::ArtworkDecoded(url.clone(), decoded),
+        ))
+    }
+    /// Store a cover decoded off the UI thread, unless the cache was reset meanwhile.
+    pub(super) fn artwork_decoded(&mut self, url: String, decoded: Result<Decoded, String>) {
+        if !self.artwork.decoding.remove(&url) {
+            return;
+        }
+        match decoded {
             Ok(decoded) => self.artwork.insert(url, decoded),
             Err(_) => self.artwork.fail(url),
         }
-        true
     }
     /// Drop decoded covers whose baked corners no longer match the theme.
     pub(super) fn reset_artwork(&mut self) {
@@ -459,7 +490,7 @@ mod tests {
             size,
             tint,
         };
-        // 160px thumbnails hit the 24 MiB budget before the entry limit.
+        // 160px thumbnails hit the 48 MiB budget before the entry limit.
         let fits: usize = MAX_DECODED_BYTES / size;
         for i in 0..fits {
             art.insert(format!("u{i}"), entry(&handle));

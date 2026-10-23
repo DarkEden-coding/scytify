@@ -366,7 +366,7 @@ pub fn dot(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
     }
 }
 
-/// Dismissible notice floating above the main view.
+/// Dismissible notice floating above the player bar.
 pub fn toast(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
     let p: Palette = *p;
     move |_| {
@@ -374,10 +374,11 @@ pub fn toast(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
         container::Style {
             background: Some(c.surface_raised.into()),
             text_color: Some(c.text),
+            // A neutral rim sets it apart in flat themes; the icon carries the error color.
             border: Border {
-                color: c.error,
+                color: c.border,
                 width: 1.0,
-                radius: p.shape.radius_small.into(),
+                radius: p.shape.radius_large.into(),
             },
             shadow: Shadow::default(),
             snap: true,

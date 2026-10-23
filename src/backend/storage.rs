@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub(crate) struct Storage {
     root: PathBuf,
     db: Connection,
+    /// Cached audio size at its last measurement.
+    audio_bytes: std::cell::Cell<u64>,
 }
 
 impl Storage {
@@ -27,6 +29,7 @@ impl Storage {
         Ok(Self {
             root: root.to_owned(),
             db,
+            audio_bytes: std::cell::Cell::new(0),
         })
     }
     /// Loads validated settings, defaulting only when absent and reporting corruption.
@@ -145,12 +148,43 @@ impl Storage {
         }
         Ok(())
     }
+    /// Directory for librespot's encrypted audio files, which it evicts itself within
+    /// `audio_budget`. Kept apart from artwork so neither cache evicts the other's files.
+    pub(crate) fn audio_dir(&self) -> PathBuf {
+        self.root.join("audio")
+    }
+    /// Re-measures cached audio on disk; walks the directory, so call it rarely.
+    pub(crate) fn measure_audio(&self) {
+        self.audio_bytes.set(self.audio_dir_bytes());
+    }
+    /// Artwork bytes from the index plus audio bytes at their last measurement.
+    pub(crate) fn used_bytes(&self) -> Result<u64, String> {
+        Ok(self.cache_bytes()? + self.audio_bytes.get())
+    }
+    fn audio_dir_bytes(&self) -> u64 {
+        fn walk(dir: &Path) -> u64 {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
+            entries
+                .flatten()
+                .map(|entry| match entry.metadata() {
+                    Ok(meta) if meta.is_dir() => walk(&entry.path()),
+                    Ok(meta) => meta.len(),
+                    Err(_) => 0,
+                })
+                .sum()
+        }
+        walk(&self.audio_dir())
+    }
     /// Deletes only disposable cached files and rows, preserving settings and session.
     pub(crate) fn clear_cache(&self) -> Result<(), String> {
-        let dir = self.root.join("cache");
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        for dir in [self.root.join("cache"), self.audio_dir()] {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+            }
         }
+        self.audio_bytes.set(0);
         self.db
             .execute("DELETE FROM cache", [])
             .map(|_| ())
@@ -165,6 +199,15 @@ impl Storage {
             .map(|n| n.max(0) as u64)
             .map_err(|e| e.to_string())
     }
+}
+
+/// Share of the total cache limit given to artwork; audio files take the rest.
+pub(crate) fn artwork_budget(total: u64) -> u64 {
+    total / 5
+}
+/// The audio share of the total cache limit.
+pub(crate) fn audio_budget(total: u64) -> u64 {
+    total - artwork_budget(total)
 }
 
 /// Returns conservative first-run settings without embedding a client ID.
@@ -194,6 +237,25 @@ fn valid_settings(s: &Settings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audio files count toward usage and are removed with the rest of the cache.
+    #[test]
+    fn audio_cache_is_measured_and_cleared() {
+        assert_eq!(artwork_budget(1000) + audio_budget(1000), 1000);
+        let root =
+            std::env::temp_dir().join(format!("custom-spotify-audio-{}", rand::random::<u64>()));
+        let store = Storage::open_at(&root).unwrap();
+        let shard = store.audio_dir().join("ab");
+        std::fs::create_dir_all(&shard).unwrap();
+        std::fs::write(shard.join("cdef"), [0u8; 100]).unwrap();
+        store.cache_artwork("art", &[1; 8], 1000).unwrap();
+        store.measure_audio();
+        assert_eq!(store.used_bytes().unwrap(), 108);
+        store.clear_cache().unwrap();
+        assert!(!store.audio_dir().exists());
+        assert_eq!(store.used_bytes().unwrap(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn artwork_cache_accounts_reads_and_enforces_total_limit() {

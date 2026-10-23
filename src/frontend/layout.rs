@@ -175,19 +175,23 @@ pub fn visible_grid(len: usize, offset: f32, viewport: f32, grid: Grid) -> (usiz
 }
 
 /// Whether a block at `top` with `height` overlaps the viewport scrolled to `scroll`,
-/// with one viewport of overscan below so art is ready when it scrolls in.
+/// with one viewport of overscan on each side so art is ready when it scrolls in.
 pub fn overlaps(top: f32, height: f32, scroll: f32, viewport: f32) -> bool {
-    top < scroll + 2.0 * viewport.max(0.0) && top + height > scroll
+    let viewport: f32 = viewport.max(0.0);
+    top < scroll + 2.0 * viewport && top + height > scroll - viewport
 }
 
 /// Overscanned fixed-height row window, bounded independently of collection size.
-/// `offset` is measured from the top of the first row.
+/// `offset` is measured from the top of the first row. A scrolled frame is drawn before
+/// the rows for its new offset are built, so one viewport of rows on each side keeps a
+/// fast glide (capped below a viewport per frame) from exposing blank space.
 pub fn visible_rows(len: usize, offset: f32, viewport: f32, row_height: f32) -> (usize, usize) {
     let row_height: f32 = row_height.max(1.0);
+    let page: usize = (viewport.max(0.0) / row_height).ceil() as usize;
     let start: usize = ((offset.max(0.0) / row_height) as usize)
-        .saturating_sub(3)
+        .saturating_sub(page + 1)
         .min(len);
-    let count: usize = (viewport.max(0.0) / row_height).ceil() as usize + 7;
+    let count: usize = 3 * page + 3;
     (start, start.saturating_add(count).min(len))
 }
 
@@ -198,7 +202,7 @@ mod tests {
     fn virtualization_is_bounded() {
         assert_eq!(visible_rows(0, 0.0, 700.0, 56.0), (0, 0));
         let (a, b) = visible_rows(50000, 100000.0, 700.0, 56.0);
-        assert!(b - a <= 20);
+        assert!(b - a <= 42);
         assert!(a > 1000);
         assert_eq!(visible_rows(5, 10000.0, 700.0, 56.0), (5, 5));
     }

@@ -162,6 +162,10 @@ pub(super) fn handle_command(
                 let client_changed = state.settings.client_id != s.client_id;
                 state.settings = s;
                 state.cache_limit_bytes = state.settings.cache_limit_bytes;
+                // A new audio budget applies to the next playback session.
+                playback::set_audio_cache(store.audio_dir(), state.cache_limit_bytes);
+                store.measure_audio();
+                state.cache_used_bytes = store.used_bytes().unwrap_or(state.cache_used_bytes);
                 if client_changed {
                     abort_login_jobs(login_ids, handles, cancelled);
                     if let Some(p) = player.take() {

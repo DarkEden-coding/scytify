@@ -75,9 +75,11 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     let mut state = super::initial_state();
     state.settings = settings.clone();
     state.cache_limit_bytes = settings.cache_limit_bytes;
+    store.measure_audio();
     state.cache_used_bytes = store
-        .cache_bytes()
+        .used_bytes()
         .map_err(|e| safe(ErrorKind::Internal, &e))?;
+    playback::set_audio_cache(store.audio_dir(), state.cache_limit_bytes);
     state.player.volume = q.snapshot.volume;
     state.player.shuffle = q.snapshot.shuffle;
     state.player.repeat = q.snapshot.repeat;
@@ -509,7 +511,8 @@ fn finish_job(
                 return;
             }
             if let Ok(bytes) = &r {
-                if let Err(e) = store.cache_artwork(&key, bytes, state.cache_limit_bytes) {
+                let budget: u64 = storage::artwork_budget(state.cache_limit_bytes);
+                if let Err(e) = store.cache_artwork(&key, bytes, budget) {
                     emit(
                         events,
                         Event::Notice(safe(
@@ -518,7 +521,7 @@ fn finish_job(
                         )),
                     );
                 }
-                state.cache_used_bytes = store.cache_bytes().unwrap_or(state.cache_used_bytes);
+                state.cache_used_bytes = store.used_bytes().unwrap_or(state.cache_used_bytes);
             }
             emit(
                 events,

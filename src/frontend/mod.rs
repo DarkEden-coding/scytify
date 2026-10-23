@@ -38,6 +38,8 @@ const SHELF_LIMIT: u16 = 20;
 /// Widget ids targeted by focus and scroll operations.
 const SEARCH_INPUT: &str = "search";
 const MAIN_SCROLL: &str = "main";
+/// How long a notice stays before it dismisses itself.
+const NOTICE_DURATION: Duration = Duration::from_secs(6);
 
 #[derive(Clone, Debug)]
 #[allow(
@@ -102,6 +104,10 @@ enum Message {
     ChooseTheme(Option<PathBuf>),
     Save,
     DismissNotice,
+    /// A cover finished decoding off the UI thread.
+    ArtworkDecoded(String, Result<artwork::Decoded, String>),
+    /// Periodic check that dismisses a notice once it has been read.
+    NoticeTick(std::time::Instant),
     Tick,
     /// Custom title bar actions.
     Minimize,
@@ -157,6 +163,10 @@ struct Ui {
     glyphs: icons::SolidGlyphs,
     notice: String,
     pending_notices: std::collections::VecDeque<String>,
+    /// The notice on screen and when it appeared, for dismissing it automatically.
+    notice_shown: Option<(String, std::time::Instant)>,
+    /// Background requests (artwork, page loads) whose passing failures are not news.
+    quiet: HashSet<RequestId>,
     query: Query,
     title: String,
     /// Header art carried by the current route, such as the artist picture.
@@ -295,6 +305,8 @@ impl Ui {
             palette,
             notice,
             pending_notices: std::collections::VecDeque::new(),
+            notice_shown: None,
+            quiet: HashSet::new(),
             query: Query::OwnPlaylists,
             title: "Home".into(),
             route_artwork: None,
@@ -381,12 +393,16 @@ impl Ui {
         }
         let cancellation = matches!(action, Action::CancelRequest(_));
         let quitting = matches!(action, Action::Quit);
+        let background: bool = is_background(&action);
         let id: RequestId = RequestId(self.next);
         self.next = (self.next + 1).min((1u64 << 63) - 1);
         match self.commands.try_send(Command { id, action }) {
             Ok(()) => {
                 if !cancellation {
                     self.active.insert(id);
+                }
+                if background {
+                    self.quiet.insert(id);
                 }
                 if quitting {
                     self.quit_pending = Some(id);
@@ -396,6 +412,9 @@ impl Ui {
             Err(error) => {
                 if matches!(error, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                     self.disconnected = true;
+                } else if background {
+                    // Background work is requested again as the view settles.
+                    return None;
                 }
                 self.notice = if self.disconnected { "Backend disconnected; checkpoint not confirmed. Use Quit or close to exit without saving." } else { "Backend busy. Please retry." }.into();
                 None
@@ -568,6 +587,7 @@ impl Ui {
             self.send(Action::CancelRequest(id));
         }
         self.active.clear();
+        self.quiet.clear();
         self.pending = None;
         self.more_pending = None;
         self.shelf_pending = None;
@@ -703,6 +723,15 @@ impl Ui {
         let task: Task<Message> = self.reduce(message);
         self.ensure_shelf();
         self.fetch_artwork();
+        if self.notice.is_empty() {
+            self.notice_shown = None;
+        } else if self
+            .notice_shown
+            .as_ref()
+            .is_none_or(|(shown, _)| *shown != self.notice)
+        {
+            self.notice_shown = Some((self.notice.clone(), std::time::Instant::now()));
+        }
         if std::mem::take(&mut self.reset_scroll) && self.window.is_some() {
             self.glide.cancel(smooth_scroll::Area::Main);
             let top = iced::widget::operation::snap_to(
@@ -867,6 +896,7 @@ impl Ui {
                 if !self.active.remove(&id) {
                     return Task::none();
                 }
+                let quiet: bool = self.quiet.remove(&id);
                 if result.is_err()
                     && let Some(pending) =
                         self.pending_play.take_if(|pending| pending.request == id)
@@ -875,11 +905,13 @@ impl Ui {
                 }
                 match result {
                     Ok(Response::Artwork { bytes }) => {
-                        self.complete_artwork(id, Some(bytes));
+                        return self
+                            .complete_artwork(id, Some(bytes))
+                            .unwrap_or_else(Task::none);
                     }
                     Ok(Response::Page(data)) => self.complete_page(id, data),
                     Err(e) => {
-                        let artwork: bool = self.complete_artwork(id, None);
+                        let artwork: bool = self.complete_artwork(id, None).is_some();
                         // Requests sent while startup sign-in is still running are retried
                         // once the backend reports Ready, so their failure isn't news.
                         let early: bool = e.kind == ErrorKind::Authentication
@@ -909,7 +941,7 @@ impl Ui {
                                 "{} Checkpoint not confirmed. Use Quit or close again to exit without saving.",
                                 e.message
                             );
-                        } else if !artwork && !early {
+                        } else if !artwork && !early && !(quiet && passing(e.kind)) {
                             self.show_notice(e.message);
                         }
                     }
@@ -1170,6 +1202,16 @@ impl Ui {
             Message::DismissNotice => {
                 self.notice = self.pending_notices.pop_front().unwrap_or_default()
             }
+            Message::ArtworkDecoded(url, decoded) => self.artwork_decoded(url, decoded),
+            Message::NoticeTick(now) => {
+                if self
+                    .notice_shown
+                    .as_ref()
+                    .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= NOTICE_DURATION)
+                {
+                    self.notice = self.pending_notices.pop_front().unwrap_or_default()
+                }
+            }
         }
         Task::none()
     }
@@ -1240,6 +1282,16 @@ impl Ui {
             window::events().map(|(id, event)| Message::Window(id, event)),
             iced::event::listen_with(shortcut),
         ]);
+        // Disconnect and failed-quit notices explain how to exit, so they stay until acted on.
+        let events: Subscription<Message> =
+            if self.notice_shown.is_some() && !self.disconnected && !self.quit_failed {
+                Subscription::batch([
+                    events,
+                    iced::time::every(Duration::from_secs(1)).map(Message::NoticeTick),
+                ])
+            } else {
+                events
+            };
         let events: Subscription<Message> = if self.glide.active() {
             Subscription::batch([events, window::frames().map(Message::GlideFrame)])
         } else {
@@ -1550,6 +1602,29 @@ struct SearchLayout {
 }
 
 /// Page query matching a playback context; single tracks have none.
+/// Requests the app makes on its own as the view changes, rather than on a user's command.
+fn is_background(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Artwork { .. }
+            | Action::Fetch { .. }
+            | Action::CancelRequest(_)
+            | Action::SetVisible(_)
+    )
+}
+
+/// Failures that resolve themselves, such as a busy backend, a rate limit or a dropped
+/// connection, as opposed to ones that need the user, such as missing permission.
+fn passing(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Network
+            | ErrorKind::RateLimited
+            | ErrorKind::Unavailable
+            | ErrorKind::StaleQueue
+    )
+}
+
 fn context_query(source: &PlaySource) -> Option<Query> {
     match source {
         PlaySource::Playlist { playlist_id, .. } => Some(Query::PlaylistTracks {
@@ -1780,6 +1855,63 @@ mod channel_tests {
         assert!(ui.send(Action::Pause).is_none());
         assert!(ui.notice.contains("busy"));
     }
+    /// Background loads that will be retried fail silently; user commands still report.
+    #[test]
+    fn passing_background_failures_are_not_shown() {
+        let (mut ui, _back) = fixture();
+        ui.notice.clear();
+        let busy = || AppError {
+            kind: ErrorKind::Unavailable,
+            message: "backend is busy".into(),
+            retry_after_seconds: None,
+        };
+        let page = PageRequest {
+            offset: 0,
+            limit: 20,
+        };
+        let fetch = ui
+            .send(Action::Fetch {
+                query: Query::LikedTracks,
+                page,
+            })
+            .unwrap();
+        let _ = ui.update(Message::Backend(Event::Completed {
+            id: fetch,
+            result: Err(busy()),
+        }));
+        assert!(ui.notice.is_empty());
+        let pause = ui.send(Action::Pause).unwrap();
+        let _ = ui.update(Message::Backend(Event::Completed {
+            id: pause,
+            result: Err(busy()),
+        }));
+        assert_eq!(ui.notice, "backend is busy");
+    }
+    #[test]
+    fn background_requests_are_dropped_quietly_under_backpressure() {
+        let (mut ui, _back) = fixture();
+        ui.notice.clear();
+        for _ in 0..COMMAND_CAPACITY {
+            assert!(ui.send(Action::Pause).is_some());
+        }
+        assert!(ui.send(Action::SetVisible(true)).is_none());
+        assert!(ui.notice.is_empty());
+    }
+    #[test]
+    fn notices_dismiss_themselves() {
+        let (mut ui, _back) = fixture();
+        ui.notice.clear();
+        let _ = ui.update(Message::Backend(Event::Notice(AppError {
+            kind: ErrorKind::Network,
+            message: "Spotify is unreachable".into(),
+            retry_after_seconds: None,
+        })));
+        let now = std::time::Instant::now();
+        let _ = ui.update(Message::NoticeTick(now));
+        assert_eq!(ui.notice, "Spotify is unreachable");
+        let _ = ui.update(Message::NoticeTick(now + NOTICE_DURATION));
+        assert!(ui.notice.is_empty());
+    }
     #[test]
     fn stale_pages_cannot_replace_new_query() {
         let (mut ui, _back) = fixture();
@@ -1926,7 +2058,7 @@ mod channel_tests {
         assert_eq!(requested.len(), ARTWORK_IN_FLIGHT);
         assert!(!requested.contains(&"art0".to_string()));
         // A late completion for a cancelled request is ignored rather than cached.
-        assert!(!ui.complete_artwork(first[0].0, None));
+        assert!(ui.complete_artwork(first[0].0, None).is_none());
     }
 }
 
