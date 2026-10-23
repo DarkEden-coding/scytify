@@ -62,12 +62,9 @@ enum Message {
     Navigate(Route),
     Back,
     Forward,
-    /// Main view scroll offset, viewport height and whether the end is near.
-    Scroll(f32, f32, bool),
+    /// Main view scroll offset and viewport height.
+    Scroll(f32, f32),
     MainResized(iced::Size),
-    LoadMore,
-    /// Jump to the next or previous window once the loaded-item bound is reached.
-    Page(bool),
     HoverRow(usize, bool),
     SelectRow(usize),
     TogglePlayback,
@@ -177,7 +174,8 @@ struct Ui {
     queue_scroll: f32,
     queue_viewport: f32,
     pending: Option<RequestId>,
-    more_pending: Option<RequestId>,
+    /// In-flight page that grows or replaces the loaded run of `data`.
+    more_pending: Option<(RequestId, paging::Fill)>,
     generation: u64,
     requests: HashMap<RequestId, u64>,
     search: String,
@@ -398,7 +396,7 @@ impl Ui {
     fn fetch(&mut self) {
         let previous = self.pending.take();
         self.cancel(previous);
-        let more = self.more_pending.take();
+        let more = self.more_pending.take().map(|(id, _)| id);
         self.cancel(more);
         if let Err(e) = persistence::Preferences::save(self) {
             self.notice = e;
@@ -432,27 +430,48 @@ impl Ui {
             self.requests.insert(id, self.generation);
         }
     }
-    /// Append the next bounded page of the current query, once at a time.
-    fn load_more(&mut self) {
-        if self.more_pending.is_some() || self.pending.is_some() {
+    /// Fetch the page the visible window needs, once at a time. A request the window has
+    /// outgrown is cancelled for the one it needs now.
+    fn ensure_window(&mut self) {
+        if self.home || self.settings || self.pending.is_some() {
             return;
         }
         let Some(data) = &self.data else {
             return;
         };
-        if !paging::can_extend(data) {
+        let wanted: Option<paging::Fill> = paging::wanted_fill(data, self.visible_slots(data));
+        if let Some((_, sent)) = &self.more_pending
+            && wanted.is_some_and(|w| sent.serves(&w))
+        {
             return;
         }
-        let offset: u64 = paging::next_offset(data);
+        if let Some((stale, _)) = self.more_pending.take() {
+            self.requests.remove(&stale);
+            self.cancel(Some(stale));
+        }
+        let Some(fill) = wanted else {
+            return;
+        };
         if let Some(id) = self.send(Action::Fetch {
             query: self.query.clone(),
             page: PageRequest {
-                offset,
-                limit: MAX_PAGE_SIZE,
+                offset: fill.offset,
+                limit: fill.limit,
             },
         }) {
-            self.more_pending = Some(id);
+            self.more_pending = Some((id, fill));
             self.requests.insert(id, self.generation);
+        }
+    }
+    /// Join a fetched page to the loaded run. A page that does not join it replaces the run.
+    fn apply_fill(&mut self, kind: paging::FillKind, page: PageData) {
+        let rejected: Option<PageData> = match (kind, &mut self.data) {
+            (paging::FillKind::Append, Some(run)) => paging::append(run, page).err(),
+            (paging::FillKind::Prepend, Some(run)) => paging::prepend(run, page).err(),
+            _ => Some(page),
+        };
+        if let Some(page) = rejected {
+            self.data = Some(page);
         }
     }
     /// Fetch the saved-albums shelf while Home is visible and signed in, once per page load.
@@ -843,13 +862,15 @@ impl Ui {
                             &mut self.sidebar_pending,
                             &mut self.sidebar_more,
                             &mut self.pending,
-                            &mut self.more_pending,
                             &mut self.queue_pending,
                             &mut self.queue_more,
                         ] {
                             if *slot == Some(id) {
                                 *slot = None;
                             }
+                        }
+                        if self.more_pending.is_some_and(|(more, _)| more == id) {
+                            self.more_pending = None;
                         }
                         self.requests.remove(&id);
                         if self.quit_pending == Some(id) {
@@ -1004,26 +1025,14 @@ impl Ui {
                 route.settings = !route.settings;
                 self.navigate(route);
             }
-            Message::Scroll(y, height, near_end) => {
+            Message::Scroll(y, height) => {
                 self.scroll = y;
                 self.main_size.height = height;
-                if near_end {
-                    self.load_more();
-                }
+                self.ensure_window();
             }
-            Message::MainResized(size) => self.main_size = size,
-            Message::LoadMore => self.load_more(),
-            Message::Page(next) => {
-                let first: u64 = self.data.as_ref().map(paging::first_offset).unwrap_or(0);
-                self.offset = if next {
-                    self.data
-                        .as_ref()
-                        .map(paging::next_offset)
-                        .unwrap_or(self.offset)
-                } else {
-                    first.saturating_sub(paging::MAX_LOADED_ITEMS as u64)
-                };
-                self.fetch();
+            Message::MainResized(size) => {
+                self.main_size = size;
+                self.ensure_window();
             }
             Message::HoverRow(index, entered) => {
                 if entered {
@@ -1136,7 +1145,7 @@ impl Ui {
         } else if self.sidebar_more == Some(id) {
             self.sidebar_more = None;
             if let Some(existing) = &mut self.sidebar_data {
-                paging::append(existing, data);
+                let _ = paging::append(existing, data);
             }
         } else if self.queue_pending == Some(id) {
             self.queue_pending = None;
@@ -1148,7 +1157,7 @@ impl Ui {
         } else if self.queue_more == Some(id) {
             self.queue_more = None;
             if let Some(existing) = &mut self.queue_data {
-                paging::append(existing, data);
+                let _ = paging::append(existing, data);
             }
         } else if self.requests.remove(&id) == Some(self.generation) {
             if let PageData::Queue { revision, .. } = &data
@@ -1159,15 +1168,16 @@ impl Ui {
             if let (Query::LikedTracks, PageData::Tracks(page)) = (&self.query, &data) {
                 self.liked_count = page.total.or(self.liked_count);
             }
-            if self.more_pending == Some(id) {
+            if let Some((more, fill)) = self.more_pending
+                && more == id
+            {
                 self.more_pending = None;
-                if let Some(existing) = &mut self.data {
-                    paging::append(existing, data);
-                }
+                self.apply_fill(fill.kind, data);
             } else {
                 self.pending = None;
                 self.data = Some(data);
             }
+            self.ensure_window();
         }
     }
     /// Subscribe to native events and focused visible playback only; never tick while hidden.
@@ -1416,12 +1426,13 @@ impl Ui {
             PageData::Search(_) | PageData::Queue { .. } => 0.0,
         }
     }
-    /// Visible item window of the main browser page: cards for playlists, artists and
-    /// albums; fixed-height rows for tracks and queue entries. Home and the search overview
-    /// show unvirtualized blocks: the window is their playlist shelf or song rows while
-    /// that block is on screen.
-    fn browser_window(&self, data: &PageData) -> (usize, usize) {
+    /// Visible window of the main browser page in list slots, loaded or not: cards for
+    /// playlists, artists and albums; fixed-height rows for tracks and queue entries. Home
+    /// and the search overview show unvirtualized blocks: the window is their playlist
+    /// shelf or song rows while that block is on screen.
+    fn visible_slots(&self, data: &PageData) -> (usize, usize) {
         let len: usize = paging::page_info(data).0;
+        let slots: usize = paging::slots(data);
         let block = |shown: usize, height: f32| {
             if self.on_screen(0.0, height) {
                 (0, shown)
@@ -1439,15 +1450,24 @@ impl Ui {
                 None => (0, 0),
             },
             PageData::Playlists(_) | PageData::Artists(_) | PageData::Albums(_) => {
-                layout::visible_grid(len, offset, self.main_size.height, self.grid_layout())
+                layout::visible_grid(slots, offset, self.main_size.height, self.grid_layout())
             }
             PageData::Tracks(_) | PageData::Queue { .. } => layout::visible_rows(
-                len,
+                slots,
                 offset,
                 self.main_size.height,
                 self.palette.shape.row_height,
             ),
         }
+    }
+    /// The loaded items inside the visible window, as indices into the loaded run.
+    /// Slots outside the run are placeholders and have no item or artwork.
+    fn browser_window(&self, data: &PageData) -> (usize, usize) {
+        let (start, end) = self.visible_slots(data);
+        let first: usize = paging::first_offset(data) as usize;
+        let loaded_end: usize = first + paging::page_info(data).0;
+        let start: usize = start.clamp(first, loaded_end);
+        (start - first, end.clamp(start, loaded_end) - first)
     }
     /// Header art of the current page: route art, or the album cover of its tracks.
     fn header_artwork(&self) -> Option<&str> {
@@ -1855,9 +1875,12 @@ mod channel_tests {
 mod browsing_tests {
     use super::*;
     fn artists(offset: u64, len: usize, has_more: bool) -> Response {
+        artists_of(offset, len, None, has_more)
+    }
+    fn artists_of(offset: u64, len: usize, total: Option<u64>, has_more: bool) -> Response {
         Response::Page(PageData::Artists(Page {
             offset,
-            total: None,
+            total,
             items: (0..len)
                 .map(|i| Artist {
                     id: SpotifyId(format!("artist{}", offset as usize + i)),
@@ -1879,10 +1902,11 @@ mod browsing_tests {
     #[test]
     fn load_more_appends_and_respects_generation() {
         let (mut ui, mut back) = channel_tests::fixture();
+        ui.home = false;
         ui.fetch();
         let first: Command = back.commands.try_recv().unwrap();
         complete(&mut ui, first.id, artists(0, 100, true));
-        let _ = ui.update(Message::Scroll(5_000.0, 700.0, true));
+        let _ = ui.update(Message::Scroll(50_000.0, 700.0));
         let more: Command = back.commands.try_recv().unwrap();
         assert!(matches!(
             more.action,
@@ -1892,14 +1916,14 @@ mod browsing_tests {
             }
         ));
         // A second trigger while loading does not duplicate the request.
-        let _ = ui.update(Message::LoadMore);
+        let _ = ui.update(Message::Scroll(50_100.0, 700.0));
         assert!(back.commands.try_recv().is_err());
         complete(&mut ui, more.id, artists(100, 50, false));
         assert_eq!(ui.data.as_ref().map(|d| paging::page_info(d).0), Some(150));
         ui.fetch();
         let replaced: Command = back.commands.try_recv().unwrap();
         complete(&mut ui, replaced.id, artists(0, 100, true));
-        let _ = ui.update(Message::LoadMore);
+        let _ = ui.update(Message::Scroll(50_000.0, 700.0));
         let stale: Command = back.commands.try_recv().unwrap();
         ui.fetch();
         complete(&mut ui, stale.id, artists(100, 100, false));
@@ -1958,6 +1982,7 @@ mod browsing_tests {
         ui.query = Query::PlaylistTracks {
             playlist_id: SpotifyId("local-files".into()),
         };
+        ui.home = false;
         ui.fetch();
         let (id, _) = fetched_offset(&mut back);
         // The first 100 raw rows were all local files.
@@ -1972,8 +1997,44 @@ mod browsing_tests {
                 next_offset: 100,
             })),
         );
-        let _ = ui.update(Message::LoadMore);
+        // The empty page leaves one placeholder row in view, which asks for the rest.
         assert_eq!(fetched_offset(&mut back).1, 100);
+    }
+    /// The list is as long as the total from the first page on; jumping away from the loaded
+    /// run replaces it with the page under the viewport, and scrolling back up replaces it
+    /// again, so any position is reachable without loading what lies between.
+    #[test]
+    fn scrolling_jumps_to_any_position_of_a_known_total() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        ui.home = false;
+        ui.fetch();
+        let first: Command = back.commands.try_recv().unwrap();
+        complete(&mut ui, first.id, artists_of(0, 100, Some(5_000), true));
+        let slots = |ui: &Ui| ui.data.as_ref().map(paging::slots);
+        assert_eq!(slots(&ui), Some(5_000));
+        let fetch = |back: &mut BackendPort| match back.commands.try_recv().unwrap() {
+            Command {
+                id,
+                action: Action::Fetch { page, .. },
+            } => (id, page.offset),
+            other => panic!("unexpected {other:?}"),
+        };
+        let _ = ui.update(Message::Scroll(1_000_000.0, 700.0));
+        let (id, offset) = fetch(&mut back);
+        assert!(offset > 100, "jumped past the loaded run, got {offset}");
+        let len = 100.min(5_000 - offset as usize);
+        complete(
+            &mut ui,
+            id,
+            artists_of(offset, len, Some(5_000), offset + 100 < 5_000),
+        );
+        let data = ui.data.as_ref().unwrap();
+        assert_eq!(paging::first_offset(data), offset);
+        assert_eq!(slots(&ui), Some(5_000));
+        // Back at the top, the first page is requested again.
+        let _ = ui.update(Message::Scroll(0.0, 700.0));
+        let (_, offset) = fetch(&mut back);
+        assert_eq!(offset, 0);
     }
     /// Back and Forward restore routes; refining a search does not add history entries.
     #[test]

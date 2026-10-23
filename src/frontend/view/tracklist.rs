@@ -42,7 +42,11 @@ impl Ui {
             summary.push_str(&format!(", {}", long_duration(total)));
         }
         meta = meta.push(self.label(summary));
-        let first_playable: Option<usize> = page.items.iter().position(|t| t.playable);
+        // Only the head of the list starts from its first track; a run loaded further down
+        // would play from the middle.
+        let first_playable: Option<usize> = (page.offset == 0)
+            .then(|| page.items.iter().position(|t| t.playable))
+            .flatten();
         let mut actions = row![].spacing(CONTENT_PADDING).align_y(Alignment::Center);
         if self.page_is_playing_context() {
             let playing: bool = self.state.player.status == PlaybackStatus::Playing;
@@ -83,7 +87,8 @@ impl Ui {
         column![hero, self.table_header(&columns), rows].into()
     }
 
-    /// Virtualized rows of `items`, which were loaded from source offset `first`.
+    /// Virtualized rows for every track of the list, where `items` were loaded from source
+    /// offset `first`. Rows whose tracks are not loaded yet are placeholders.
     fn track_rows<'a>(
         &'a self,
         items: &'a [Track],
@@ -91,14 +96,39 @@ impl Ui {
         data: &PageData,
         columns: &Columns,
     ) -> Element<'a> {
-        let (start, end) = self.browser_window(data);
+        let (start, end) = self.visible_slots(data);
         let height: f32 = self.palette.shape.row_height;
         let mut rows = column![space().height(start as f32 * height)];
-        for index in start..end {
-            rows = rows.push(self.track_row(items, first, index, columns));
+        for slot in start..end {
+            let loaded = (slot as u64)
+                .checked_sub(first)
+                .filter(|&index| (index as usize) < items.len());
+            rows = rows.push(match loaded {
+                Some(index) => self.track_row(items, first, index as usize, slot, columns),
+                None => self.placeholder_row(slot, columns),
+            });
         }
-        rows = rows.push(space().height((items.len() - end) as f32 * height));
+        rows = rows.push(space().height((paging::slots(data) - end) as f32 * height));
         container(rows).padding([0.0, CONTENT_PADDING]).into()
+    }
+
+    /// Row-sized stand-in for a track that is not loaded yet: its number and a blank cover.
+    fn placeholder_row<'a>(&'a self, slot: usize, columns: &Columns) -> Element<'a> {
+        let mut cells = row![
+            container(self.subdued((slot + 1).to_string()))
+                .width(INDEX_WIDTH)
+                .center_x(INDEX_WIDTH)
+        ]
+        .spacing(CELL_GAP)
+        .align_y(Alignment::Center);
+        if !columns.album {
+            cells = cells.push(self.cover(None, THUMB, Shape::Cover));
+        }
+        container(cells)
+            .padding([0.0, ROW_PADDING])
+            .height(self.palette.shape.row_height)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     /// Where playback starts when row `index` is played. The backend skips local files and
@@ -181,18 +211,20 @@ impl Ui {
         .into()
     }
 
-    /// One fixed-height track row. Click selects, double-click plays, hover reveals actions.
+    /// One fixed-height track row for `items[index]`, shown at list position `slot`. Click
+    /// selects, double-click plays, hover reveals actions.
     fn track_row<'a>(
         &'a self,
         items: &'a [Track],
         first: u64,
         index: usize,
+        slot: usize,
         columns: &Columns,
     ) -> Element<'a> {
         let p: &Palette = &self.palette;
         let item: &Track = &items[index];
-        let hovered: bool = self.hovered_row == Some(index);
-        let selected: bool = self.selected_row == Some(index);
+        let hovered: bool = self.hovered_row == Some(slot);
+        let selected: bool = self.selected_row == Some(slot);
         let current: bool = self
             .state
             .player
@@ -280,9 +312,9 @@ impl Ui {
                 .align_y(Alignment::Center)
                 .style(styles::track_row(p, hovered, selected)),
         )
-        .on_press(Message::SelectRow(index))
-        .on_enter(Message::HoverRow(index, true))
-        .on_exit(Message::HoverRow(index, false));
+        .on_press(Message::SelectRow(slot))
+        .on_enter(Message::HoverRow(slot, true))
+        .on_exit(Message::HoverRow(slot, false));
         if item.playable {
             area = area.on_double_click(play);
         }

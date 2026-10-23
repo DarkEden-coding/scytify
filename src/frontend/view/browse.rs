@@ -1,5 +1,5 @@
 //! Scrolling main page: Home shelves, card grids for playlists, albums and artists,
-//! shared page headers, empty states, onboarding and the incremental-loading footer.
+//! shared page headers, empty states and onboarding.
 use super::sidebar::thin_scrollbar;
 use super::*;
 use crate::frontend::artwork::Shape;
@@ -35,13 +35,14 @@ impl Ui {
             PageData::Playlists(page) if self.home => self.home_view(page),
             PageData::Playlists(page) => column![
                 self.section(&self.title),
-                self.grid(&page.items, data, |item, grid| self
+                self.grid(&page.items, data, Shape::Cover, |item, grid| self
                     .playlist_card(item, grid)),
             ]
             .into(),
             PageData::Artists(page) => column![
                 self.section(&self.title),
-                self.grid(&page.items, data, |item, grid| self.artist_card(item, grid)),
+                self.grid(&page.items, data, Shape::Round, |item, grid| self
+                    .artist_card(item, grid)),
             ]
             .into(),
             PageData::Albums(page) if self.artist_page() => {
@@ -56,13 +57,15 @@ impl Ui {
                         None,
                     ),
                     self.section("Albums"),
-                    self.grid(&page.items, data, |item, grid| self.album_card(item, grid)),
+                    self.grid(&page.items, data, Shape::Cover, |item, grid| self
+                        .album_card(item, grid)),
                 ]
                 .into()
             }
             PageData::Albums(page) => column![
                 self.section(&self.title),
-                self.grid(&page.items, data, |item, grid| self.album_card(item, grid)),
+                self.grid(&page.items, data, Shape::Cover, |item, grid| self
+                    .album_card(item, grid)),
             ]
             .into(),
             PageData::Tracks(page) => self.track_page(page, data),
@@ -74,11 +77,8 @@ impl Ui {
         };
         let mut page = column![content];
         // Home shelves carry their own empty states.
-        if !self.home && paging::page_info(data).0 == 0 {
+        if !self.home && paging::slots(data) == 0 {
             page = page.push(self.empty_page());
-        }
-        if !self.home {
-            page = page.push(self.footer(data));
         }
         self.scroll_page(page.into())
     }
@@ -175,7 +175,7 @@ impl Ui {
             .into()
     }
 
-    /// Main scroll area; reports its size, scroll position and approaching end.
+    /// Main scroll area; reports its size and scroll position.
     fn scroll_page<'a>(&self, content: Element<'a>) -> Element<'a> {
         let area = scrollable(
             container(content)
@@ -183,11 +183,7 @@ impl Ui {
                 .padding(iced::Padding::ZERO.bottom(CONTENT_PADDING)),
         )
         .id(iced::widget::Id::new(MAIN_SCROLL))
-        .on_scroll(|v| {
-            let y: f32 = v.absolute_offset().y;
-            let height: f32 = v.bounds().height;
-            Message::Scroll(y, height, y + height >= v.content_bounds().height - 600.0)
-        })
+        .on_scroll(|v| Message::Scroll(v.absolute_offset().y, v.bounds().height))
         .direction(thin_scrollbar())
         .style(styles::scrollbar(&self.palette))
         .width(Length::Fill)
@@ -269,29 +265,47 @@ impl Ui {
         .into()
     }
 
-    /// Virtualized card grid; only visible rows plus overscan are built.
+    /// Virtualized card grid as long as the whole collection; only visible rows plus
+    /// overscan are built, and slots whose items are not loaded yet are placeholders.
     fn grid<'a, T>(
         &'a self,
         items: &'a [T],
         data: &PageData,
+        shape: Shape,
         card: impl Fn(&'a T, Grid) -> Element<'a>,
     ) -> Element<'a> {
         let grid: Grid = self.grid_layout();
-        let (start, end) = self.browser_window(data);
+        let (start, end) = self.visible_slots(data);
+        let first: usize = paging::first_offset(data) as usize;
         let row_height: f32 = grid.card_height + GRID_GAP;
-        let total_rows: usize = items.len().div_ceil(grid.columns);
+        let total_rows: usize = paging::slots(data).div_ceil(grid.columns);
         let first_row: usize = start / grid.columns;
         let end_row: usize = end.div_ceil(grid.columns);
         let mut rows = column![space().height(first_row as f32 * row_height)];
-        for chunk in items[start..end].chunks(grid.columns) {
+        for row_index in first_row..end_row {
             let mut cards = row![].spacing(GRID_GAP);
-            for item in chunk {
-                cards = cards.push(card(item, grid));
+            let row_start: usize = row_index * grid.columns;
+            for slot in row_start..(row_start + grid.columns).min(end) {
+                cards = cards.push(
+                    match slot.checked_sub(first).and_then(|index| items.get(index)) {
+                        Some(item) => card(item, grid),
+                        None => self.placeholder_card(grid, shape),
+                    },
+                );
             }
             rows = rows.push(container(cards).height(row_height));
         }
         rows = rows.push(space().height((total_rows - end_row) as f32 * row_height));
         container(rows).padding([0.0, CONTENT_PADDING]).into()
+    }
+
+    /// Card-sized stand-in for an item that is not loaded yet.
+    fn placeholder_card(&self, grid: Grid, shape: Shape) -> Element<'_> {
+        container(self.cover(None, grid.art(), shape))
+            .padding(CARD_PADDING)
+            .width(grid.card_width)
+            .height(grid.card_height)
+            .into()
     }
 
     fn playlist_card<'a>(&'a self, item: &'a Playlist, grid: Grid) -> Element<'a> {
@@ -478,50 +492,6 @@ impl Ui {
                 (smallest, self.fit_bold(title, available, smallest))
             }
         }
-    }
-
-    /// Incremental loading status, or compact paging once the loaded bound is reached.
-    fn footer(&self, data: &PageData) -> Element<'_> {
-        let p: &Palette = &self.palette;
-        let (len, total, more) = paging::page_info(data);
-        let first: u64 = paging::first_offset(data);
-        let content: Element<'_> = if self.more_pending.is_some() {
-            self.subdued("Loading more…").into()
-        } else if paging::can_extend(data) {
-            button(self.subdued("Show more"))
-                .padding([6, 12])
-                .style(styles::ghost_button(p, false))
-                .on_press(Message::LoadMore)
-                .into()
-        } else if more || first > 0 {
-            let mut previous = button(self.label("Previous")).style(styles::ghost_button(p, false));
-            if first > 0 {
-                previous = previous.on_press(Message::Page(false));
-            }
-            let mut next = button(self.label("Next")).style(styles::ghost_button(p, false));
-            if more {
-                next = next.on_press(Message::Page(true));
-            }
-            row![
-                previous,
-                self.subdued(format!(
-                    "{}–{}{}",
-                    first + 1,
-                    first + len as u64,
-                    total.map(|n| format!(" of {n}")).unwrap_or_default()
-                )),
-                next
-            ]
-            .spacing(p.shape.spacing * 2.0)
-            .align_y(Alignment::Center)
-            .into()
-        } else {
-            space().into()
-        };
-        container(content)
-            .padding([p.shape.spacing * 2.0, CONTENT_PADDING])
-            .center_x(Length::Fill)
-            .into()
     }
 
     /// Account prerequisites shown instead of library content until sign-in completes.
