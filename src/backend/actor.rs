@@ -260,13 +260,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     if spirc && !state.connect.is_remote() && q.observe_connect(&state.player, &state.connect.queue_preview).unwrap_or(false) {
                         checkpoint(&store, &q, &port.events);
                     }
-                    if jobs.len() < 4 && let Some(token) = tokens.as_ref() {
-                        let ids = observation_ids(&state, &metadata);
-                        if !ids.is_empty() {
-                            let a = api.clone(); let token = token.access_token.clone(); let epoch = auth_epoch;
-                            jobs.spawn(async move { Job::ObservedMetadata(epoch, a.hydrate_tracks(&token, &ids).await) });
-                        }
-                    }
+                    request_observed_metadata(&state, &metadata, &tokens, &api, auth_epoch, &mut jobs);
                     let _ = port.state.send(state.clone());
                 }
                 let recent = super::connect::live_recent(polling.last_live, healthy);
@@ -301,7 +295,11 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
             event = async { match player_events.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
                 match event {
                     Some(event) => {
+                        let track = state.player.current.as_ref().map(|t| t.id.clone());
                         let dirty = handle_player_event(event, &mut q, &mut state, player.as_ref(), &metadata, &port.events);
+                        if state.player.current.as_ref().map(|t| &t.id) != track.as_ref() {
+                            request_observed_metadata(&state, &metadata, &tokens, &api, auth_epoch, &mut jobs);
+                        }
                         if dirty || last_position_checkpoint.elapsed() >= std::time::Duration::from_secs(30) {
                             checkpoint(&store, &q, &port.events); last_position_checkpoint = std::time::Instant::now();
                         }
@@ -468,7 +466,9 @@ fn finish_job(
             if revision != polling.revision {
                 return;
             }
-            polling.finish(&result, &mut state.connect.source);
+            let decoder_owned =
+                player.as_ref().is_some_and(|p| p.connect.is_some()) && !state.connect.is_remote();
+            polling.finish(&result, &mut state.connect.source, decoder_owned);
             match result {
                 Ok(observation) => {
                     polling.notice_kind = None;
@@ -1415,16 +1415,56 @@ fn handle_player_event(
     if state.connect.is_remote() {
         return false;
     }
+    let spirc = player.is_some_and(|p| p.connect.is_some());
+    // Spirc chooses tracks and options itself, and account snapshots lag behind it,
+    // so its decoder is the source for what this device plays.
+    match update {
+        playback::Update::Track(track) if spirc => {
+            state.player.current = Some(metadata.get(&track.id).cloned().unwrap_or(*track));
+            return q
+                .observe_connect(&state.player, &state.connect.queue_preview)
+                .unwrap_or(false);
+        }
+        playback::Update::Shuffle(shuffle) if spirc => {
+            state.player.shuffle = shuffle;
+            return false;
+        }
+        playback::Update::Repeat(repeat) if spirc => {
+            state.player.repeat = repeat;
+            return false;
+        }
+        playback::Update::Volume(volume) if spirc => {
+            state.player.volume = volume;
+            q.snapshot.volume = volume;
+            return false;
+        }
+        _ => {}
+    }
     // Events queued before a local command must not undo its immediate anchor.
     if observed_at < state.player.observed_at {
         return false;
+    }
+    // A skip can wait on the network before the decoder reads metadata; show the track it
+    // loads now when it is already known, rather than the previous one.
+    if let playback::Update::Loading(_, id) = &update
+        && spirc
+        && state
+            .player
+            .current
+            .as_ref()
+            .is_none_or(|track| &track.id != id)
+        && let Some(track) = metadata
+            .get(id)
+            .or_else(|| state.connect.queue_preview.iter().find(|t| &t.id == id))
+    {
+        state.player.current = Some(track.clone());
     }
     if playback::apply_anchor(&mut state.player, &update, observed_at) {
         q.snapshot.position_ms = state.player.position_ms;
         return false;
     }
     // Spirc owns queue advancement; only the fallback queue handles terminal events.
-    if player.is_some_and(|p| p.connect.is_some()) {
+    if spirc {
         return false;
     }
     let mut queue_dirty = false;
@@ -1704,6 +1744,28 @@ fn install_connect_state(
                 "Spotify Connect unavailable. This computer can still play locally; device updates use polling. Enable RUST_LOG for details.",
             )),
         );
+    }
+}
+
+/// Hydrates the playing track and the head of the queue preview when they are not cached.
+fn request_observed_metadata(
+    state: &AppState,
+    metadata: &HashMap<SpotifyId, Track>,
+    tokens: &Option<auth::Tokens>,
+    api: &api::Api,
+    auth_epoch: u64,
+    jobs: &mut JoinSet<Job>,
+) {
+    let Some(token) = tokens.as_ref().filter(|_| jobs.len() < 4) else {
+        return;
+    };
+    let ids = observation_ids(state, metadata);
+    if !ids.is_empty() {
+        let api = api.clone();
+        let token = token.access_token.clone();
+        jobs.spawn(async move {
+            Job::ObservedMetadata(auth_epoch, api.hydrate_tracks(&token, &ids).await)
+        });
     }
 }
 

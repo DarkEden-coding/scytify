@@ -48,6 +48,13 @@ native-tls 0.2.18, openssl 0.10.81, openssl-macros 0.1.1,
 openssl-sys 0.9.117, and tokio-native-tls 0.3.1. The app builds with rustls;
 these optional native-TLS packages are not compiled.
 
+librespot-connect and librespot-playback 0.8.0 are also patched copies in `vendor/`
+(see their READMEs); Cargo.lock only drops their registry checksums. Spirc drops a
+pause acknowledgement that a newer play has superseded, which otherwise left it
+paused while audio played after a quick pause and play. The ALSA sink requests at
+most 150 ms of output buffer instead of 500 ms; the player drains that buffer
+before reporting a pause, and seeks and skips play what it holds.
+
 ## Implemented behavior
 
 OAuth uses authorization-code PKCE with a pre-bound fixed loopback listener, random state, an exact callback path, bounded request parsing, and a 180-second timeout. CancelLogin aborts that task immediately. Tokens and rotated refresh tokens are stored only in Linux Secret Service; SQLite/settings never contain them. Startup refreshes expiring tokens before connection. Periodic refresh does not replace an active decoder. Synchronous credential operations use a blocking context to avoid nesting zbus's runtime inside a Tokio worker; a locked vault can delay that serialized operation.
@@ -64,19 +71,31 @@ playback, and one-second position events.
 Position anchors retain their measurement instant through actor processing. A separate
 receiver task timestamps decoder events on receipt because librespot 0.8 does not
 include emission timestamps. Queue/options changes preserve the existing anchor;
-local fallback pause/seek first advance it to the command instant, and Seeked
+local pause/seek first advance it to the command instant, and Seeked
 acknowledgements immediately replace it. Events received before a newer local
 anchor are ignored. Track transitions stop extrapolation while the decoder loads.
 The one-second event interval remains unchanged; the UI extrapolates between
-measurements. Actual output latency and the ±50 ms local target need live audio
-verification.
+measurements. Periodic position reports within 250 ms of the running anchor keep it:
+the decoder runs ahead of the speaker by the output buffer, so the transition anchors
+are the closer measurement. While a seek is unacknowledged (at most two seconds),
+acknowledgements of earlier seeks and position reports are ignored, so a scrubbing
+MPRIS client does not replay its intermediate positions.
+
+While Spirc plays on this device, its decoder is the only source of local playback
+state. Accepted pause, resume, seek, volume, shuffle and repeat commands show at once;
+decoder events then confirm them. `Loading` names the track before its metadata is read,
+so a skip shows a cached track immediately; `TrackChanged` supplies name, artists and
+duration until Web API hydration replaces them. Shuffle, repeat and volume follow
+Spirc's player events. Web API polls and dealer pushes only update devices, context
+and the queue preview: a poll measured before the latest pause or skip used to
+overwrite them. Spotify does not push cluster updates for this device's own changes,
+so polling continues, every five seconds instead of every second.
 
 Web API progress uses the request/response-header midpoint, before JSON parsing
 or devices/queue requests; the potentially stale response timestamp is ignored.
 Remote polling and dealer updates retain a playing anchor when progress differs
 by at most 250 ms and device, track, and status match. Larger jumps and
-transitions replace it. Dealer echoes for unchanged local playback preserve the
-more precise decoder anchor. Network asymmetry and device/reporting latency still
+transitions replace it. Network asymmetry and device/reporting latency still
 limit remote accuracy.
 
 The custom queue remains the local fallback when Connect initialization fails.

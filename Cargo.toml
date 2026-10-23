@@ -40,6 +40,8 @@ strip = "debuginfo"
 
 [patch.crates-io]
 librespot-oauth = { path = "vendor/librespot-oauth" }
+librespot-connect = { path = "vendor/librespot-connect" }
+librespot-playback = { path = "vendor/librespot-playback" }
 
 [workspace]
 members = ["vendor/librespot-oauth"]

@@ -388,13 +388,24 @@ impl Polling {
     pub fn due(&self) -> bool {
         !self.pending && Instant::now() >= self.next
     }
-    pub fn finish(&mut self, result: &Result<Observation, AppError>, source: &mut RemoteSource) {
+    /// Schedules the next poll. While Spirc plays on this device its decoder already
+    /// reports playback and the dealer pushes takeovers, so polls only refresh devices.
+    pub fn finish(
+        &mut self,
+        result: &Result<Observation, AppError>,
+        source: &mut RemoteSource,
+        decoder_owned: bool,
+    ) {
         self.pending = false;
         let seconds = match result {
             Ok(_) => {
                 self.failures = 0;
                 *source = RemoteSource::Polling;
-                if self.visible { 1 } else { 8 }
+                match (self.visible, decoder_owned) {
+                    (false, _) => 8,
+                    (true, true) => 5,
+                    (true, false) => 1,
+                }
             }
             Err(error) => {
                 *source = RemoteSource::Unavailable;
@@ -472,6 +483,24 @@ pub(super) fn apply(
     if (!spirc && !state.connect.is_remote()) || (!has_active && !had_active) {
         return;
     }
+    let queue_changed = observation.queue.as_ref().is_some_and(|queue| {
+        queue
+            .iter()
+            .map(|t| &t.id)
+            .ne(state.connect.queue_preview.iter().map(|t| &t.id))
+    });
+    // Spirc plays through this device's decoder, whose events are newer and more precise
+    // than any account snapshot: a poll can predate the last pause, seek or skip.
+    if spirc && !state.connect.is_remote() {
+        if queue_changed || state.connect.context_uri != observation.context_uri {
+            state.player.queue_revision = state.player.queue_revision.wrapping_add(1);
+        }
+        if let Some(queue) = observation.queue {
+            state.connect.queue_preview = queue;
+        }
+        state.connect.context_uri = observation.context_uri;
+        return;
+    }
     let old_track = state.player.current.as_ref().map(|track| &track.id);
     let same_playback = previous_device == state.connect.active_device_id
         && old_track == observation.track.as_ref().map(|track| &track.id);
@@ -483,20 +512,8 @@ pub(super) fn apply(
             state.player.seek_revision = state.player.seek_revision.wrapping_add(1);
         }
     }
-    // The local decoder is more precise than dealer echoes on this device.
-    let preserve_anchor = keep_anchor(&state.player, &observation, same_playback)
-        || (spirc
-            && !state.connect.is_remote()
-            && same_playback
-            && state.player.status == observation.status);
-    if changed
-        || observation.queue.as_ref().is_some_and(|queue| {
-            queue
-                .iter()
-                .map(|t| &t.id)
-                .ne(state.connect.queue_preview.iter().map(|t| &t.id))
-        })
-    {
+    let preserve_anchor = keep_anchor(&state.player, &observation, same_playback);
+    if changed || queue_changed {
         state.player.queue_revision = state.player.queue_revision.wrapping_add(1);
     }
     if changed {
@@ -666,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn local_dealer_echo_keeps_the_more_precise_decoder_anchor() {
+    fn local_spirc_snapshots_never_override_the_decoder() {
         let mut state = crate::backend::initial_state();
         state.connect.this_device_id = Some("local".into());
         let mut observation = parse_player(&json!({
@@ -681,13 +698,21 @@ mod tests {
             &super::super::playback::Update::Playing(12_100),
             decoder_time,
         );
+        // A poll sent before the user resumed: paused, an older position and old options.
         observation.observed_at += Duration::from_secs(1);
-        observation.position_ms = 12_000; // A delayed dealer echo accompanying new options.
+        observation.position_ms = 11_400;
+        observation.status = PlaybackStatus::Paused;
         observation.shuffle = true;
-        apply(&mut state, observation, RemoteSource::Live, true);
-        assert!(state.player.shuffle);
+        observation.context_uri = Some("spotify:album:0123456789012345678901".into());
+        apply(&mut state, observation, RemoteSource::Polling, true);
+        assert_eq!(state.player.status, PlaybackStatus::Playing);
+        assert!(!state.player.shuffle);
         assert_eq!(state.player.position_ms, 12_100);
         assert_eq!(state.player.observed_at, decoder_time);
+        assert_eq!(
+            state.connect.context_uri.as_deref(),
+            Some("spotify:album:0123456789012345678901")
+        );
     }
 
     #[test]
@@ -868,13 +893,16 @@ mod tests {
         let mut source = RemoteSource::Live;
         let mut error = err(ErrorKind::RateLimited, "limit");
         error.retry_after_seconds = Some(60);
-        polling.finish(&Err(error), &mut source);
+        polling.finish(&Err(error), &mut source, false);
         assert_eq!(source, RemoteSource::Unavailable);
         assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(59));
         polling.visible = false;
-        polling.finish(&Ok(parse_player(&Value::Null)), &mut source);
+        polling.finish(&Ok(parse_player(&Value::Null)), &mut source, false);
         assert_eq!(source, RemoteSource::Polling);
         assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(7));
+        polling.visible = true;
+        polling.finish(&Ok(parse_player(&Value::Null)), &mut source, true);
+        assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(4));
         let mut state = crate::backend::initial_state();
         apply(
             &mut state,

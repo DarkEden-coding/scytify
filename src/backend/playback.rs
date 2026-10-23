@@ -207,8 +207,12 @@ impl Playback {
     }
     /// Seeks the active decoder.
     pub(crate) fn seek(&self, ms: u64) {
-        self.event_gate.lock().unwrap().seek_started();
+        self.expect_seek(ms);
         self.player.seek(ms.min(u32::MAX as u64) as u32);
+    }
+    /// Records a seek sent through Spirc, so reports of earlier seeks are not shown.
+    pub(crate) fn expect_seek(&self, ms: u64) {
+        self.event_gate.lock().unwrap().seek_started(ms);
     }
     /// Validates an event against the most recent load/seek generation before exposing it.
     pub(crate) fn update(&self, event: PlayerEvent) -> Option<(Update, Instant)> {
@@ -313,6 +317,11 @@ pub(super) fn advance_anchor(player: &mut crate::domain::PlayerState, at: Instan
     player.observed_at = at;
 }
 
+/// How far a periodic decoder report may drift from the running anchor before replacing it.
+/// The decoder runs ahead of the speaker by the output buffer, so these reports lead the
+/// transition anchors a little; replacing the anchor for that would only make it jitter.
+const POSITION_JITTER_MS: u64 = 250;
+
 /// Applies only measured decoder anchors. Terminal events have no position.
 pub(super) fn apply_anchor(
     player: &mut crate::domain::PlayerState,
@@ -321,7 +330,7 @@ pub(super) fn apply_anchor(
 ) -> bool {
     use crate::domain::PlaybackStatus;
     let position_ms = match *update {
-        Update::Loading(ms) => {
+        Update::Loading(ms, _) => {
             player.status = PlaybackStatus::Loading;
             ms
         }
@@ -333,12 +342,29 @@ pub(super) fn apply_anchor(
             player.status = PlaybackStatus::Paused;
             ms
         }
-        Update::Position(ms) => ms,
+        Update::Position(ms) => {
+            if player.status == PlaybackStatus::Playing
+                && position_at(player, observed_at).abs_diff(ms) <= POSITION_JITTER_MS
+            {
+                return true;
+            }
+            ms
+        }
         Update::Seeked(ms) => {
             player.seek_revision = player.seek_revision.wrapping_add(1);
             ms
         }
-        Update::End | Update::Unavailable => return false,
+        Update::Stopped => {
+            advance_anchor(player, observed_at);
+            player.status = PlaybackStatus::Stopped;
+            return true;
+        }
+        Update::Track(_)
+        | Update::Shuffle(_)
+        | Update::Repeat(_)
+        | Update::Volume(_)
+        | Update::End
+        | Update::Unavailable => return false,
     };
     player.position_ms = position_ms;
     player.observed_at = observed_at;
@@ -371,19 +397,54 @@ fn uri(id: &crate::domain::SpotifyId) -> Result<SpotifyUri, String> {
     let id = LibrespotId::from_base62(&id.0).map_err(|_| "invalid Spotify track ID".to_owned())?;
     Ok(SpotifyUri::Track { id })
 }
+/// What the decoder knows about a track it started. It lacks album and artist links,
+/// so the actor prefers hydrated Web API metadata and only shows this until it arrives.
+fn track(item: &librespot_metadata::audio::AudioItem) -> Option<crate::domain::Track> {
+    use librespot_metadata::audio::UniqueFields;
+    let UniqueFields::Track { artists, .. } = &item.unique_fields else {
+        return None;
+    };
+    Some(crate::domain::Track {
+        id: crate::domain::SpotifyId(item.track_id.to_id().ok()?),
+        name: item.name.clone(),
+        artists: artists
+            .iter()
+            .filter_map(|artist| {
+                Some(crate::domain::Artist {
+                    id: crate::domain::SpotifyId(artist.id.to_id().ok()?),
+                    name: artist.name.clone(),
+                    artwork_url: None,
+                })
+            })
+            .collect(),
+        album: None,
+        duration_ms: item.duration_ms.into(),
+        playable: true,
+        source_index: None,
+    })
+}
+
 /// Maps normalized volume to the mixer integer range.
 fn to_mixer_volume(v: f32) -> u16 {
     (v.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16
 }
 
 /// Projects relevant, generation-checked librespot events into backend state updates.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum Update {
-    Loading(u64),
+    /// Position and the track being loaded, known before the decoder reads its metadata.
+    Loading(u64, crate::domain::SpotifyId),
     Playing(u64),
     Paused(u64),
     Position(u64),
     Seeked(u64),
+    /// The decoder started this track. Under Spirc this is how the actor learns about
+    /// skips, autoplay and tracks chosen from other devices without waiting for a poll.
+    Track(Box<crate::domain::Track>),
+    Shuffle(bool),
+    Repeat(crate::domain::RepeatMode),
+    Volume(f32),
+    Stopped,
     End,
     Unavailable,
 }
@@ -397,7 +458,14 @@ struct EventGate {
     request_floor: Option<u64>,
     terminal_armed: bool,
     terminal_seen: bool,
+    /// The latest requested seek and when it was sent, until the decoder reports it.
+    seek: Option<(u64, Instant)>,
 }
+
+/// How long reports of earlier seeks are held back while waiting for the latest one.
+const SEEK_PATIENCE: Duration = Duration::from_secs(2);
+/// How far the decoder may land from a requested seek; it seeks to packet boundaries.
+const SEEK_TOLERANCE_MS: u64 = 1000;
 
 impl EventGate {
     fn expect_track(&mut self, track: crate::domain::SpotifyId) {
@@ -406,16 +474,26 @@ impl EventGate {
         self.request_id = None;
         self.terminal_armed = false;
         self.terminal_seen = false;
+        self.seek = None;
     }
-    fn seek_started(&mut self) {
+    fn seek_started(&mut self, target: u64) {
         self.terminal_armed = false;
+        self.seek = Some((target, Instant::now()));
+    }
+    /// Whether a requested seek is still unreported. Seeks sent in quick succession (a
+    /// scrubbing MPRIS client) are acknowledged one by one, so until the latest arrives,
+    /// positions belong to seeks the user already moved past.
+    fn seeking(&mut self) -> bool {
+        self.seek = self.seek.filter(|(_, at)| at.elapsed() < SEEK_PATIENCE);
+        self.seek.is_some()
+    }
+    fn expects(&self, track: &SpotifyUri) -> bool {
+        self.expected_track
+            .as_ref()
+            .is_some_and(|expected| track.to_id().ok().as_deref() == Some(expected.0.as_str()))
     }
     fn matches(&self, request: u64, track: &SpotifyUri) -> bool {
-        self.request_id == Some(request)
-            && self
-                .expected_track
-                .as_ref()
-                .is_some_and(|expected| track.to_id().ok().as_deref() == Some(expected.0.as_str()))
+        self.request_id == Some(request) && self.expects(track)
     }
     fn update(&mut self, event: PlayerEvent) -> Option<Update> {
         use PlayerEvent::*;
@@ -426,6 +504,7 @@ impl EventGate {
                 self.request_id = Some(play_request_id);
                 self.request_floor = Some(play_request_id);
                 self.terminal_seen = false;
+                self.seek = None;
                 None
             }
             Loading {
@@ -434,7 +513,8 @@ impl EventGate {
                 position_ms,
             } if self.matches(play_request_id, &track_id) => {
                 self.terminal_armed = true;
-                Some(Update::Loading(position_ms.into()))
+                let track = self.expected_track.clone()?;
+                Some(Update::Loading(position_ms.into(), track))
             }
             Playing {
                 play_request_id,
@@ -456,8 +536,17 @@ impl EventGate {
                 track_id,
                 position_ms,
             } if self.matches(play_request_id, &track_id) => {
+                let position_ms = u64::from(position_ms);
+                if self.seeking()
+                    && self
+                        .seek
+                        .is_some_and(|(target, _)| target.abs_diff(position_ms) > SEEK_TOLERANCE_MS)
+                {
+                    return None;
+                }
+                self.seek = None;
                 self.terminal_armed = true;
-                Some(Update::Seeked(position_ms.into()))
+                Some(Update::Seeked(position_ms))
             }
             PositionChanged {
                 play_request_id,
@@ -468,9 +557,27 @@ impl EventGate {
                 play_request_id,
                 track_id,
                 position_ms,
-            } if self.matches(play_request_id, &track_id) => {
+            } if self.matches(play_request_id, &track_id) && !self.seeking() => {
                 Some(Update::Position(position_ms.into()))
             }
+            TrackChanged { audio_item } if self.expects(&audio_item.track_id) => {
+                track(&audio_item).map(|track| Update::Track(Box::new(track)))
+            }
+            ShuffleChanged { shuffle } => Some(Update::Shuffle(shuffle)),
+            RepeatChanged { context, track } => Some(Update::Repeat(if track {
+                crate::domain::RepeatMode::One
+            } else if context {
+                crate::domain::RepeatMode::Queue
+            } else {
+                crate::domain::RepeatMode::Off
+            })),
+            VolumeChanged { volume } => {
+                Some(Update::Volume(f32::from(volume) / f32::from(u16::MAX)))
+            }
+            Stopped {
+                play_request_id,
+                track_id,
+            } if self.matches(play_request_id, &track_id) => Some(Update::Stopped),
             EndOfTrack {
                 play_request_id,
                 track_id,
@@ -517,7 +624,11 @@ mod event_tests {
         assert_eq!(player.seek_revision, 1);
         apply_anchor(&mut player, &Update::Paused(45_010), received_at);
         assert_eq!(position_at(&player, processed_at), 45_010);
-        apply_anchor(&mut player, &Update::Loading(0), received_at);
+        apply_anchor(
+            &mut player,
+            &Update::Loading(0, crate::domain::SpotifyId("0".into())),
+            received_at,
+        );
         assert_eq!(player.status, PlaybackStatus::Loading);
         assert_eq!(position_at(&player, processed_at), 0);
         assert!(!apply_anchor(&mut player, &Update::End, processed_at));
@@ -567,51 +678,51 @@ mod event_tests {
         let mut gate = EventGate::default();
         gate.expect_track(a.clone());
         gate.update(PlayerEvent::PlayRequestIdChanged { play_request_id: 1 });
-        assert_eq!(
+        assert!(matches!(
             gate.update(PlayerEvent::Loading {
                 play_request_id: 1,
                 track_id: au.clone(),
                 position_ms: 0
             }),
-            Some(Update::Loading(0))
-        );
+            Some(Update::Loading(0, _))
+        ));
         // A duplicate occurrence has the same track ID, so its request generation matters.
         gate.expect_track(a);
         gate.update(PlayerEvent::PlayRequestIdChanged { play_request_id: 1 });
-        assert_eq!(
+        assert!(
             gate.update(PlayerEvent::EndOfTrack {
                 play_request_id: 1,
                 track_id: au.clone()
-            }),
-            None
+            })
+            .is_none()
         );
         gate.update(PlayerEvent::PlayRequestIdChanged { play_request_id: 2 });
-        assert_eq!(
+        assert!(
             gate.update(PlayerEvent::Loading {
                 play_request_id: 2,
                 track_id: wrong,
                 position_ms: 0,
-            }),
-            None
+            })
+            .is_none()
         );
         gate.update(PlayerEvent::Loading {
             play_request_id: 2,
             track_id: au.clone(),
             position_ms: 0,
         });
-        assert_eq!(
+        assert!(matches!(
             gate.update(PlayerEvent::EndOfTrack {
                 play_request_id: 2,
                 track_id: au.clone()
             }),
             Some(Update::End)
-        );
-        assert_eq!(
+        ));
+        assert!(
             gate.update(PlayerEvent::EndOfTrack {
                 play_request_id: 2,
                 track_id: au
-            }),
-            None
+            })
+            .is_none()
         );
     }
     #[test]
@@ -625,28 +736,74 @@ mod event_tests {
             track_id: au.clone(),
             position_ms: 1,
         });
-        gate.seek_started();
-        assert_eq!(
+        gate.seek_started(50);
+        assert!(
             gate.update(PlayerEvent::EndOfTrack {
                 play_request_id: 7,
                 track_id: au.clone()
-            }),
-            None
+            })
+            .is_none()
         );
-        assert_eq!(
+        assert!(matches!(
             gate.update(PlayerEvent::Seeked {
                 play_request_id: 7,
                 track_id: au.clone(),
                 position_ms: 50
             }),
             Some(Update::Seeked(50))
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             gate.update(PlayerEvent::EndOfTrack {
                 play_request_id: 7,
                 track_id: au
             }),
             Some(Update::End)
-        );
+        ));
+    }
+
+    /// A scrubbing MPRIS client sends seeks faster than the decoder acknowledges them; the
+    /// older acknowledgements and position reports must not drag the anchor back.
+    #[test]
+    fn reports_of_superseded_seeks_are_skipped_until_the_latest_lands() {
+        let (a, au) = track("4uLU6hMCjMI75M1A2tKUQC");
+        let mut gate = EventGate::default();
+        gate.expect_track(a);
+        gate.update(PlayerEvent::PlayRequestIdChanged { play_request_id: 3 });
+        let seeked = |position_ms| PlayerEvent::Seeked {
+            play_request_id: 3,
+            track_id: au.clone(),
+            position_ms,
+        };
+        let position = |position_ms| PlayerEvent::PositionChanged {
+            play_request_id: 3,
+            track_id: au.clone(),
+            position_ms,
+        };
+        for target in [80_000, 100_000, 120_000] {
+            gate.seek_started(target);
+        }
+        assert!(gate.update(seeked(79_996)).is_none());
+        assert!(gate.update(position(100_400)).is_none());
+        assert!(matches!(
+            gate.update(seeked(119_996)),
+            Some(Update::Seeked(119_996))
+        ));
+        assert!(matches!(
+            gate.update(position(120_900)),
+            Some(Update::Position(120_900))
+        ));
+    }
+
+    #[test]
+    fn periodic_reports_within_jitter_keep_the_transition_anchor() {
+        let mut player = crate::backend::initial_state().player;
+        let start = Instant::now();
+        apply_anchor(&mut player, &Update::Playing(0), start);
+        // The decoder runs ahead of the speaker by its output buffer.
+        let later = start + Duration::from_secs(1);
+        apply_anchor(&mut player, &Update::Position(1150), later);
+        assert_eq!((player.position_ms, player.observed_at), (0, start));
+        apply_anchor(&mut player, &Update::Position(3000), later);
+        assert_eq!((player.position_ms, player.observed_at), (3000, later));
     }
 }

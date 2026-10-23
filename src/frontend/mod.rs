@@ -42,6 +42,11 @@ const SEARCH_INPUT: &str = "search";
 const MAIN_SCROLL: &str = "main";
 /// How long a notice stays before it dismisses itself.
 const NOTICE_DURATION: Duration = Duration::from_secs(6);
+/// Lyrics redraw interval while playing. Each redraw rebuilds the whole window, and 30
+/// per second keeps the syllable fill and line glide smooth at half the display rate.
+const LYRICS_FRAME: Duration = Duration::from_millis(33);
+/// How close the reported position must come to a released seek for the slider to follow it.
+const SEEK_REACHED_MS: u64 = 1000;
 
 #[derive(Clone, Debug)]
 #[allow(
@@ -856,6 +861,11 @@ impl Ui {
     }
     /// Reduce one message, then reconcile artwork and pending scroll resets.
     fn update(&mut self, message: Message) -> Task<Message> {
+        // Animation frames arrive many times a second and change no data, so they skip the
+        // reconciliation below; the scroll events a glide causes still run it.
+        if matches!(message, Message::LyricsFrame(_) | Message::GlideFrame(_)) {
+            return self.reduce(message);
+        }
         let task: Task<Message> = self.reduce(message);
         self.ensure_shelf();
         self.ensure_mixes();
@@ -988,7 +998,12 @@ impl Ui {
                 }
                 let remote: bool = self.state.connect.is_remote();
                 self.volume_hold = self.volume_hold.filter(|h| h.shown().is_some());
-                self.seek_hold = self.seek_hold.filter(|h| h.shown().is_some());
+                // A released seek shows until the player reaches it or the settle time ends.
+                let position: u64 = self.position_ms();
+                self.seek_hold = self.seek_hold.filter(|h| {
+                    h.shown().is_some()
+                        && (h.is_dragging() || h.value.abs_diff(position) > SEEK_REACHED_MS)
+                });
                 if newly_ready && let Some(preferences) = self.pending_preferences.take() {
                     preferences.apply(self);
                 }
@@ -1144,12 +1159,9 @@ impl Ui {
                     self.send(Action::SetVolume(volume));
                 }
             }
+            // Every step of a drag would be a decoder seek, so only the release seeks.
             Message::Seek(position_ms) => {
-                if self.state.connect.is_remote() {
-                    self.seek_hold = Some(devices::Held::dragging(position_ms));
-                } else {
-                    self.send(Action::Seek { position_ms });
-                }
+                self.seek_hold = Some(devices::Held::dragging(position_ms));
             }
             Message::SeekReleased => {
                 if let Some(held) = self.seek_hold.as_mut().filter(|h| h.is_dragging()) {
@@ -1551,7 +1563,10 @@ impl Ui {
             && playing
             && self.lyrics.animated()
         {
-            Subscription::batch([events, window::frames().map(Message::LyricsFrame)])
+            Subscription::batch([
+                events,
+                iced::time::every(LYRICS_FRAME).map(Message::LyricsFrame),
+            ])
         } else if self.glide.active() {
             Subscription::batch([events, window::frames().map(Message::GlideFrame)])
         } else {
@@ -2652,6 +2667,40 @@ mod browsing_tests {
             Action::Seek { position_ms: 5000 }
         ));
         assert!(back.commands.try_recv().is_err());
+    }
+
+    /// Scrubbing seeks once, on release, and the slider stays where it was dropped until
+    /// the player reports that position, so it never snaps back to the old one.
+    #[test]
+    fn scrubbing_seeks_on_release_and_holds_until_the_player_arrives() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        let mut state: AppState = ui.state.clone();
+        state.player.current = Some(Track {
+            duration_ms: 200_000,
+            ..track("a", None)
+        });
+        state.player.position_ms = 1000;
+        let _ = ui.update(Message::State(state.clone()));
+        while back.commands.try_recv().is_ok() {}
+
+        for position_ms in [20_000, 40_000, 60_000] {
+            let _ = ui.update(Message::Seek(position_ms));
+        }
+        assert!(back.commands.try_recv().is_err());
+        let _ = ui.update(Message::SeekReleased);
+        assert!(matches!(
+            back.commands.try_recv().unwrap().action,
+            Action::Seek {
+                position_ms: 60_000
+            }
+        ));
+
+        // An update sent before the backend handled the seek keeps the dropped position.
+        let _ = ui.update(Message::State(state.clone()));
+        assert_eq!(ui.seek_hold.as_ref().and_then(|h| h.shown()), Some(60_000));
+        state.player.position_ms = 60_000;
+        let _ = ui.update(Message::State(state));
+        assert!(ui.seek_hold.is_none());
     }
 
     fn track(id: &str, source_index: Option<u64>) -> Track {

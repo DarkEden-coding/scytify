@@ -144,12 +144,14 @@ pub(super) fn handle_command(
             load_current(q, state, player, true);
             return Some(Ok(Response::Accepted));
         }
-        return Some(
-            connect
-                .control(&action)
-                .map(|_| Response::Accepted)
-                .map_err(|e| safe(ErrorKind::Unavailable, &e)),
-        );
+        if let (Action::Seek { position_ms }, Some(p)) = (&action, player.as_ref()) {
+            p.expect_seek(*position_ms);
+        }
+        if let Err(e) = connect.control(&action) {
+            return Some(Err(safe(ErrorKind::Unavailable, &e)));
+        }
+        show_spirc_command(&action, q, state);
+        return Some(Ok(Response::Accepted));
     }
     if let Action::Play(source) = &action
         && player.as_ref().is_some_and(|p| p.connect.is_some())
@@ -695,6 +697,38 @@ fn play_with_connect(
     Ok(Response::Accepted)
 }
 
+/// Shows an accepted Spirc transport command at once. Spirc reports it only through decoder
+/// events, and the decoder confirms a pause after draining its output buffer, so waiting
+/// for them made the controls lag. Those events still replace these values on arrival.
+fn show_spirc_command(action: &Action, q: &mut Queue, state: &mut AppState) {
+    let now = std::time::Instant::now();
+    let player = &mut state.player;
+    match *action {
+        Action::Pause if player.status == PlaybackStatus::Playing => {
+            playback::advance_anchor(player, now);
+            player.status = PlaybackStatus::Paused;
+        }
+        Action::Resume if player.status == PlaybackStatus::Paused => {
+            player.observed_at = now;
+            player.status = PlaybackStatus::Playing;
+        }
+        Action::Seek { position_ms } => {
+            if let Some(track) = &player.current {
+                player.position_ms = position_ms.min(track.duration_ms);
+                player.observed_at = now;
+            }
+        }
+        Action::SetVolume(volume) => {
+            player.volume = volume;
+            q.snapshot.volume = volume;
+        }
+        Action::SetShuffle(shuffle) => player.shuffle = shuffle,
+        Action::SetRepeat(repeat) => player.repeat = repeat,
+        _ => {}
+    }
+    q.snapshot.position_ms = player.position_ms;
+}
+
 /// Aborts authorization jobs when account/client ownership is invalidated.
 fn abort_login_jobs(
     login_ids: &mut HashSet<RequestId>,
@@ -893,5 +927,47 @@ mod tests {
         }
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Spirc confirms a pause only after its output buffer drains, so accepted transport
+    /// commands show at once, frozen or extrapolated from the instant they were sent.
+    #[test]
+    fn accepted_spirc_transport_shows_before_the_decoder_confirms_it() {
+        let mut queue = Queue::empty(1);
+        let mut state = crate::backend::initial_state();
+        state.player.current = Some(Track {
+            id: SpotifyId("0123456789012345678901".into()),
+            name: "Song".into(),
+            artists: Vec::new(),
+            album: None,
+            duration_ms: 90_000,
+            playable: true,
+            source_index: None,
+        });
+        state.player.status = PlaybackStatus::Playing;
+        state.player.position_ms = 5000;
+        state.player.observed_at = std::time::Instant::now() - std::time::Duration::from_secs(2);
+
+        show_spirc_command(&Action::Pause, &mut queue, &mut state);
+        assert_eq!(state.player.status, PlaybackStatus::Paused);
+        let paused_at = state.player.position_ms;
+        assert!((7000..7500).contains(&paused_at));
+        assert_eq!(queue.snapshot.position_ms, paused_at);
+
+        show_spirc_command(&Action::Resume, &mut queue, &mut state);
+        assert_eq!(state.player.status, PlaybackStatus::Playing);
+        assert_eq!(state.player.position_ms, paused_at);
+        assert!(state.player.observed_at.elapsed() < std::time::Duration::from_secs(1));
+
+        show_spirc_command(
+            &Action::Seek {
+                position_ms: 120_000,
+            },
+            &mut queue,
+            &mut state,
+        );
+        assert_eq!(state.player.position_ms, 90_000);
+        show_spirc_command(&Action::SetShuffle(true), &mut queue, &mut state);
+        assert!(state.player.shuffle);
     }
 }
