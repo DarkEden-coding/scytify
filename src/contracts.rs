@@ -90,7 +90,8 @@ pub struct SearchResults {
 
 #[derive(Clone, Debug)]
 pub enum PlaySource {
-    /// Fetch complete membership before atomically replacing the session; offset is occurrence.
+    /// Offset is the raw occurrence. Spirc loads the context directly; the local fallback
+    /// fetches complete membership before atomically replacing the session.
     Playlist {
         playlist_id: SpotifyId,
         start_offset: u64,

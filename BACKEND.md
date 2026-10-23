@@ -81,8 +81,12 @@ audio before sending the official transfer request. A failed request leaves loca
 audio paused and available to resume.
 
 Session/Connect initialization has a 30-second deadline so failed internal
-protocol access does not keep Web API authorization pending indefinitely. With Spirc available, source loading validates and gathers membership using
-the existing official API loader, then hands the resulting tracks to Spirc. The
+protocol access does not keep Web API authorization pending indefinitely. With Spirc available, playing a playlist, album, or Liked Songs loads its
+Spotify context URI straight into Spirc at the raw item offset, and a single
+track loads without a metadata round trip, so playback starts without Web API
+requests. The checkpoint then follows Connect observations. Without Spirc,
+the official API loader gathers membership, fetching pages concurrently once
+the first page reports the total. The
 actor never advances the custom queue from Spirc terminal events. This avoids two
 owners loading the same decoder. Restoring a checkpoint does not activate this
 device or interrupt another device. A restored selection is loaded only on Play.

@@ -8,10 +8,12 @@ mod layout;
 mod measure;
 mod navigation;
 mod paging;
+mod pending_play;
 mod persistence;
 mod search;
 mod shortcuts;
 mod sidebar;
+mod smooth_scroll;
 mod styles;
 pub mod theme;
 mod tint;
@@ -84,6 +86,16 @@ enum Message {
     Queue,
     QueueScroll(f32, f32, bool),
     QueueMore,
+    /// Play a source starting at a known track, shown in the player before Spotify confirms it.
+    PlayTrack(PlaySource, Box<Track>),
+    /// Scrollable moved: report to the glide, then handle as the area's own scroll message.
+    Scrolled(smooth_scroll::Area, smooth_scroll::Metrics),
+    /// Mouse wheel ticks (in pixels) over a scroll area.
+    Wheel(smooth_scroll::Area, f32),
+    /// The user grabbed a scroll area; stop gliding.
+    GlideStop(smooth_scroll::Area),
+    /// Animation frame while a glide is running.
+    GlideFrame(std::time::Instant),
     Client(String),
     Cache(String),
     ThemePath(String),
@@ -165,6 +177,8 @@ struct Ui {
     /// Measured size of the main scroll area; estimated until the first layout.
     main_size: iced::Size,
     reset_scroll: bool,
+    glide: smooth_scroll::SmoothScroll,
+    pending_play: Option<pending_play::PendingPlay>,
     hovered_row: Option<usize>,
     selected_row: Option<usize>,
     queue_data: Option<PageData>,
@@ -295,6 +309,8 @@ impl Ui {
             scroll: 0.0,
             main_size: iced::Size::ZERO,
             reset_scroll: false,
+            glide: smooth_scroll::SmoothScroll::default(),
+            pending_play: None,
             hovered_row: None,
             selected_row: None,
             queue_data: None,
@@ -688,6 +704,7 @@ impl Ui {
         self.ensure_shelf();
         self.fetch_artwork();
         if std::mem::take(&mut self.reset_scroll) && self.window.is_some() {
+            self.glide.cancel(smooth_scroll::Area::Main);
             let top = iced::widget::operation::snap_to(
                 iced::widget::Id::new(MAIN_SCROLL),
                 iced::widget::operation::RelativeOffset::START,
@@ -796,6 +813,13 @@ impl Ui {
                     self.unmuted_volume = state.player.volume;
                 }
                 self.state = state;
+                if let Some(pending) = self.pending_play.as_mut() {
+                    if pending.observe(&self.state.player) {
+                        pending.show(&mut self.state.player);
+                    } else {
+                        self.pending_play = None;
+                    }
+                }
                 let remote: bool = self.state.connect.is_remote();
                 self.volume_hold = self.volume_hold.filter(|h| h.shown().is_some());
                 self.seek_hold = self.seek_hold.filter(|h| h.shown().is_some());
@@ -842,6 +866,12 @@ impl Ui {
             Message::Backend(Event::Completed { id, result }) => {
                 if !self.active.remove(&id) {
                     return Task::none();
+                }
+                if result.is_err()
+                    && let Some(pending) =
+                        self.pending_play.take_if(|pending| pending.request == id)
+                {
+                    pending.restore(&mut self.state.player);
                 }
                 match result {
                     Ok(Response::Artwork { bytes }) => {
@@ -955,9 +985,19 @@ impl Ui {
                 }
                 self.send(action);
             }
+            Message::PlayTrack(source, track) => {
+                self.play_context = context_query(&source);
+                if let Some(request) = self.send(Action::Play(source)) {
+                    let pending =
+                        pending_play::PendingPlay::new(*track, request, &self.state.player);
+                    pending.show(&mut self.state.player);
+                    self.pending_play = Some(pending);
+                }
+            }
             Message::SidebarFilter(value) => {
                 self.sidebar_filter = value;
                 self.sidebar_scroll = 0.0;
+                self.glide.cancel(smooth_scroll::Area::Sidebar);
             }
             Message::SidebarScroll(y, height, near_end) => {
                 self.sidebar_scroll = y;
@@ -1061,6 +1101,20 @@ impl Ui {
                 }
             }
             Message::QueueMore => self.queue_load_more(),
+            Message::Scrolled(area, m) => {
+                self.glide.observe(area, m);
+                let next = match area {
+                    smooth_scroll::Area::Main => Message::Scroll(m.y, m.height),
+                    smooth_scroll::Area::Sidebar => {
+                        Message::SidebarScroll(m.y, m.height, m.near_end())
+                    }
+                    smooth_scroll::Area::Queue => Message::QueueScroll(m.y, m.height, m.near_end()),
+                };
+                return self.reduce(next);
+            }
+            Message::Wheel(area, delta) => self.glide.wheel(area, delta, std::time::Instant::now()),
+            Message::GlideStop(area) => self.glide.cancel(area),
+            Message::GlideFrame(now) => return self.glide.frame(now),
             Message::Client(s) => self.client = s,
             Message::Cache(s) => self.cache = s,
             Message::ThemePath(s) => self.theme_path = s,
@@ -1186,6 +1240,11 @@ impl Ui {
             window::events().map(|(id, event)| Message::Window(id, event)),
             iced::event::listen_with(shortcut),
         ]);
+        let events: Subscription<Message> = if self.glide.active() {
+            Subscription::batch([events, window::frames().map(Message::GlideFrame)])
+        } else {
+            events
+        };
         if self.window.is_some()
             && self.focused
             && self.state.player.status == PlaybackStatus::Playing
@@ -2165,6 +2224,35 @@ mod browsing_tests {
             playable: true,
             source_index,
         }
+    }
+
+    /// A clicked track shows as playing at once, stays through stale backend updates and
+    /// gives way to the backend's view if the request fails.
+    #[test]
+    fn clicked_track_shows_before_the_backend_confirms_it() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        let source = PlaySource::Track(SpotifyId("a".into()));
+        let _ = ui.update(Message::PlayTrack(source, Box::new(track("a", None))));
+        let id = back.commands.try_recv().unwrap().id;
+        assert_eq!(ui.state.player.current.as_ref().unwrap().id.0, "a");
+        assert_eq!(ui.state.player.status, PlaybackStatus::Playing);
+
+        let mut stale: AppState = ui.state.clone();
+        stale.player.current = Some(track("old", None));
+        stale.player.status = PlaybackStatus::Paused;
+        let _ = ui.update(Message::State(stale));
+        assert_eq!(ui.state.player.current.as_ref().unwrap().id.0, "a");
+
+        let _ = ui.update(Message::Backend(Event::Completed {
+            id,
+            result: Err(AppError {
+                kind: ErrorKind::Unavailable,
+                message: "unavailable".into(),
+                retry_after_seconds: None,
+            }),
+        }));
+        assert_eq!(ui.state.player.current.as_ref().unwrap().id.0, "old");
+        assert_eq!(ui.state.player.status, PlaybackStatus::Paused);
     }
 
     /// Regression: the backend skips local files, so a row plays from its raw position.

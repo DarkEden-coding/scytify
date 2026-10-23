@@ -119,7 +119,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     let mut last_position_checkpoint = std::time::Instant::now();
     let mut refresh_tick = tokio::time::interval(std::time::Duration::from_secs(30));
     refresh_tick.tick().await;
-    let mut observation_tick = tokio::time::interval(std::time::Duration::from_millis(250));
+    let mut observation_tick = tokio::time::interval(std::time::Duration::from_millis(100));
     observation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut polling = super::remote::Polling::new();
 
@@ -1404,12 +1404,14 @@ fn install_connect_state(
 }
 
 fn observation_ids(state: &AppState, metadata: &HashMap<SpotifyId, Track>) -> Vec<SpotifyId> {
+    // Each track is its own request, so only the head of the queue preview is hydrated.
+    const PREVIEW_HYDRATION: usize = 10;
     let mut ids = Vec::new();
     for track in state
         .player
         .current
         .iter()
-        .chain(state.connect.queue_preview.iter())
+        .chain(state.connect.queue_preview.iter().take(PREVIEW_HYDRATION))
     {
         if !metadata.contains_key(&track.id) && !ids.contains(&track.id) {
             ids.push(track.id.clone());

@@ -1,8 +1,14 @@
 //! Internal Spotify Connect transport. Spirc and observation share the decoder's Session.
 use super::remote::{self, Observation};
-use crate::{contracts::Action, domain::*};
+use crate::{
+    contracts::{Action, PlaySource},
+    domain::*,
+};
 use futures_util::StreamExt;
-use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, PlayingTrack, Spirc};
+use librespot_connect::{
+    ConnectConfig, LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
+    Spirc,
+};
 use librespot_core::{Session, authentication::Credentials, dealer::protocol::Message};
 use librespot_playback::{mixer::Mixer, player::Player};
 use librespot_protocol::connect::ClusterUpdate;
@@ -121,6 +127,50 @@ impl Connect {
         self.spirc
             .load(LoadRequest::from_tracks(tracks, options))
             .map_err(|e| e.to_string())
+    }
+
+    /// Starts a playlist, album, or collection context at its raw item index. Spirc resolves
+    /// the context itself, so playback starts without gathering membership through the Web API.
+    pub fn load_context(
+        &self,
+        context_uri: String,
+        index: u64,
+        shuffle: bool,
+        repeat: RepeatMode,
+    ) -> Result<(), String> {
+        let options = LoadRequestOptions {
+            start_playing: true,
+            playing_track: Some(PlayingTrack::Index(index.min(u32::MAX as u64) as u32)),
+            // Loading resets Spirc's options, so the current ones travel with the request.
+            context_options: Some(LoadContextOptions::Options(Options {
+                shuffle,
+                repeat: repeat == RepeatMode::Queue,
+                repeat_track: repeat == RepeatMode::One,
+            })),
+            ..LoadRequestOptions::default()
+        };
+        self.spirc.activate().map_err(|e| e.to_string())?;
+        self.spirc
+            .load(LoadRequest::from_context_uri(context_uri, options))
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Spotify context URI for a collection source; `None` for a single track.
+pub(super) fn context_uri(source: &PlaySource, user_id: &str) -> Option<(String, u64)> {
+    match source {
+        PlaySource::Playlist {
+            playlist_id,
+            start_offset,
+        } => Some((format!("spotify:playlist:{}", playlist_id.0), *start_offset)),
+        PlaySource::Album {
+            album_id,
+            start_offset,
+        } => Some((format!("spotify:album:{}", album_id.0), *start_offset)),
+        PlaySource::LikedSongs { start_offset } => {
+            Some((format!("spotify:user:{user_id}:collection"), *start_offset))
+        }
+        PlaySource::Track(_) => None,
     }
 }
 
@@ -284,6 +334,31 @@ pub(super) fn live_recent(last: Option<Instant>, healthy: bool) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn collection_sources_map_to_context_uris_at_their_raw_offset() {
+        let id = || SpotifyId("0123456789012345678901".into());
+        let playlist = PlaySource::Playlist {
+            playlist_id: id(),
+            start_offset: 7,
+        };
+        assert_eq!(
+            context_uri(&playlist, "me"),
+            Some(("spotify:playlist:0123456789012345678901".into(), 7))
+        );
+        let album = PlaySource::Album {
+            album_id: id(),
+            start_offset: 2,
+        };
+        assert_eq!(
+            context_uri(&album, "me"),
+            Some(("spotify:album:0123456789012345678901".into(), 2))
+        );
+        assert_eq!(
+            context_uri(&PlaySource::LikedSongs { start_offset: 40 }, "me"),
+            Some(("spotify:user:me:collection".into(), 40))
+        );
+        assert_eq!(context_uri(&PlaySource::Track(id()), "me"), None);
+    }
     #[test]
     fn cluster_projects_device_options_position_and_duplicate_queue() {
         let mut cluster = librespot_protocol::connect::Cluster {

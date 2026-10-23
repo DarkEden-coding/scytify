@@ -55,7 +55,10 @@ impl Ui {
             actions = actions.push(self.round_play(
                 false,
                 true,
-                Message::Action(Action::Play(self.source(&page.items, page.offset, index))),
+                Message::PlayTrack(
+                    self.source(&page.items, page.offset, index),
+                    Box::new(page.items[index].clone()),
+                ),
             ));
         }
         let shuffle: bool = self.state.player.shuffle;
@@ -232,7 +235,7 @@ impl Ui {
             .as_ref()
             .is_some_and(|t| t.id == item.id);
         let playing: bool = current && self.state.player.status == PlaybackStatus::Playing;
-        let play = Message::Action(Action::Play(self.source(items, first, index)));
+        let play = Message::PlayTrack(self.source(items, first, index), Box::new(item.clone()));
         let number: Element<'a> = if hovered && item.playable {
             button(glyph(p, Icon::Play, 16.0))
                 .padding(0)

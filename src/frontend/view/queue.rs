@@ -96,17 +96,15 @@ impl Ui {
 
     /// Scrolling list that reports its offset, with the fade over its bottom edge.
     fn queue_scroll_area<'a>(&self, rows: iced::widget::Column<'a, Message>) -> Element<'a> {
-        self.faded(
+        self.faded(smooth_wheel(
             scrollable(rows.padding(iced::Padding::ZERO.bottom(FADE)))
-                .on_scroll(|v| {
-                    let y: f32 = v.absolute_offset().y;
-                    let height: f32 = v.bounds().height;
-                    Message::QueueScroll(y, height, y + height >= v.content_bounds().height - 200.0)
-                })
+                .id(Area::Queue.id())
+                .on_scroll(|v| Message::Scrolled(Area::Queue, Metrics::of(&v)))
                 .direction(gutter_scrollbar())
                 .style(styles::scrollbar(&self.palette))
                 .height(Length::Fill),
-        )
+            Area::Queue,
+        ))
     }
 
     /// Thumbnail, title and artist; explicit entries can be removed.

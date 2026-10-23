@@ -1,3 +1,5 @@
+use futures_util::{StreamExt, TryStreamExt};
+
 use crate::{
     contracts::{
         AppError, ErrorKind, Page, PageData, PageRequest, PlaySource, Query, SEARCH_LIMIT,
@@ -8,6 +10,10 @@ use crate::{
 
 /// Queue source identity of Liked Songs, which has no Spotify ID or snapshot.
 const LIKED_SONGS_SOURCE: &str = "liked-songs";
+/// Items per source membership page, the Web API maximum.
+const SOURCE_PAGE: u64 = 50;
+/// Source membership pages requested at once.
+const SOURCE_PAGE_CONCURRENCY: usize = 6;
 
 /// Small current Web API client; it never owns or logs credentials.
 #[derive(Clone)]
@@ -89,7 +95,7 @@ impl Api {
         source: &PlaySource,
         selected: Option<&Track>,
     ) -> Result<LoadedSource, AppError> {
-        let (path, offset, source_id, snapshot_id) = match source {
+        let (path, offset, source_id) = match source {
             PlaySource::Playlist {
                 playlist_id,
                 start_offset,
@@ -97,7 +103,6 @@ impl Api {
                 format!("playlists/{}/items", valid_id(playlist_id)?),
                 *start_offset,
                 playlist_id.clone(),
-                self.playlist_snapshot(token, playlist_id).await?,
             ),
             PlaySource::Album {
                 album_id,
@@ -106,44 +111,63 @@ impl Api {
                 format!("albums/{}/tracks", valid_id(album_id)?),
                 *start_offset,
                 album_id.clone(),
-                format!("album:{}", album_id.0),
             ),
             PlaySource::LikedSongs { start_offset } => (
                 "me/tracks".to_owned(),
                 *start_offset,
                 SpotifyId(LIKED_SONGS_SOURCE.into()),
-                LIKED_SONGS_SOURCE.into(),
             ),
             PlaySource::Track(_) => {
                 return Err(err(ErrorKind::InvalidInput, "track is not a collection"));
             }
         };
         let library = matches!(source, PlaySource::LikedSongs { .. });
+        let path = path.as_str();
+        let page = move |raw: u64| async move {
+            self.get_json(token, &format!("{path}?offset={raw}&limit={SOURCE_PAGE}"))
+                .await
+                .map_err(|e| if library { library_scope(e) } else { e })
+        };
+        let snapshot = async {
+            match source {
+                PlaySource::Playlist { playlist_id, .. } => {
+                    self.playlist_snapshot(token, playlist_id).await
+                }
+                PlaySource::Album { album_id, .. } => Ok(format!("album:{}", album_id.0)),
+                _ => Ok(LIKED_SONGS_SOURCE.into()),
+            }
+        };
+        // The first page reports the total, so the remaining pages are fetched concurrently.
+        let (first, snapshot_id) = tokio::try_join!(page(0), snapshot)?;
+        let total = first.get("total").and_then(|x| x.as_u64());
+        let rest: Vec<serde_json::Value> = futures_util::stream::iter(
+            (SOURCE_PAGE..total.unwrap_or(0)).step_by(SOURCE_PAGE as usize),
+        )
+        .map(page)
+        .buffered(SOURCE_PAGE_CONCURRENCY)
+        .try_collect()
+        .await?;
         let mut raw_index = 0u64;
-        let mut first_total = None;
         let mut playable_before = 0usize;
         let mut selected_playable = false;
         let mut tracks = Vec::new();
         let mut metadata = Vec::new();
-        loop {
-            let mut v = self
-                .get_json(token, &format!("{path}?offset={raw_index}&limit=50"))
-                .await
-                .map_err(|e| if library { library_scope(e) } else { e })?;
+        for (page_offset, mut v) in (0..)
+            .step_by(SOURCE_PAGE as usize)
+            .zip(std::iter::once(first).chain(rest))
+        {
             // Offsets are only meaningful while membership is stable (likes have no snapshot).
-            let total = v.get("total").and_then(|x| x.as_u64());
-            if *first_total.get_or_insert(total) != total {
+            if v.get("total").and_then(|x| x.as_u64()) != total {
                 return Err(err(
                     ErrorKind::StaleQueue,
                     "source changed while it was loading; retry",
                 ));
             }
-            let has_next = v.get("next").and_then(|x| x.as_str()).is_some();
             let items = match v.get_mut("items").map(serde_json::Value::take) {
                 Some(serde_json::Value::Array(items)) => items,
                 _ => return Err(err(ErrorKind::Network, "Spotify source omitted items")),
             };
-            if has_next && items.is_empty() {
+            if raw_index != page_offset || items.is_empty() && raw_index < total.unwrap_or(0) {
                 return Err(err(
                     ErrorKind::Network,
                     "Spotify pagination did not advance",
@@ -163,9 +187,6 @@ impl Api {
                     metadata.push(t);
                 }
                 raw_index += 1;
-            }
-            if !has_next {
-                break;
             }
         }
         if let PlaySource::Playlist { playlist_id, .. } = source
@@ -210,6 +231,46 @@ impl Api {
         })
     }
 
+    /// Up to 100 playable Liked Songs starting at the selected occurrence, which must be playable.
+    pub(super) async fn liked_window(
+        &self,
+        token: &str,
+        start: u64,
+    ) -> Result<Vec<SpotifyId>, AppError> {
+        let page = |offset: u64| async move {
+            self.get_json(
+                token,
+                &format!("me/tracks?offset={offset}&limit={SOURCE_PAGE}"),
+            )
+            .await
+            .map_err(library_scope)
+        };
+        let (first, second) = tokio::try_join!(page(start), page(start + SOURCE_PAGE))?;
+        let tracks = [first, second]
+            .iter()
+            .filter_map(|v| v.get("items").and_then(|x| x.as_array()))
+            .flatten()
+            .map(|item| parse_track(unwrap_item(item, Kind::Tracks)))
+            .collect::<Vec<_>>();
+        match tracks.first() {
+            None => Err(err(
+                ErrorKind::InvalidInput,
+                "start offset is outside source",
+            )),
+            Some(Some(t)) if t.playable => Ok(tracks
+                .into_iter()
+                .flatten()
+                .filter(|t| t.playable)
+                .take(100)
+                .map(|t| t.id)
+                .collect()),
+            Some(_) => Err(err(
+                ErrorKind::Unavailable,
+                "the selected source occurrence is unavailable",
+            )),
+        }
+    }
+
     /// Current playlist revision, compared before and after gathering its membership.
     async fn playlist_snapshot(&self, token: &str, id: &SpotifyId) -> Result<String, AppError> {
         let v = self
@@ -233,21 +294,30 @@ impl Api {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut out = Vec::new();
-        for chunk in ids.chunks(50) {
-            let joined = chunk
-                .iter()
-                .map(valid_id)
-                .collect::<Result<Vec<_>, _>>()?
-                .join(",");
-            let v = self
-                .get_json(token, &format!("tracks?ids={joined}"))
-                .await?;
-            if let Some(xs) = v.get("tracks").and_then(|x| x.as_array()) {
-                out.extend(xs.iter().filter_map(parse_track));
+        // Development-mode apps lost the batch `tracks?ids=` endpoint in February 2026, so
+        // tracks are fetched one at a time, a few concurrently.
+        let paths = ids
+            .iter()
+            .map(|id| valid_id(id).map(|id| format!("tracks/{id}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let results: Vec<Result<serde_json::Value, AppError>> = futures_util::stream::iter(paths)
+            .map(|path| async move { self.get_json(token, &path).await })
+            .buffered(SOURCE_PAGE_CONCURRENCY)
+            .collect()
+            .await;
+        // Like the batch endpoint, one missing track does not fail the others.
+        let mut tracks = Vec::new();
+        let mut error = None;
+        for result in results {
+            match result {
+                Ok(v) => tracks.extend(parse_track(&v)),
+                Err(e) => error = error.or(Some(e)),
             }
         }
-        Ok(out)
+        match error {
+            Some(e) if tracks.is_empty() => Err(e),
+            _ => Ok(tracks),
+        }
     }
 
     async fn get_json(&self, token: &str, path: &str) -> Result<serde_json::Value, AppError> {

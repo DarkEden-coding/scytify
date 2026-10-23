@@ -150,6 +150,11 @@ pub(super) fn handle_command(
                 .map_err(|e| safe(ErrorKind::Unavailable, &e)),
         );
     }
+    if let Action::Play(source) = &action
+        && player.as_ref().is_some_and(|p| p.connect.is_some())
+    {
+        return Some(play_with_connect(source, store, q, state, player, metadata));
+    }
     match action {
         Action::Configure(s) => match store.save_settings(&s) {
             Err(e) => Some(Err(safe(ErrorKind::InvalidInput, &e))),
@@ -595,6 +600,52 @@ pub(super) fn handle_command(
         | Action::SetDeviceVolume { .. }
         | Action::RefreshDevices => unreachable!(),
     }
+}
+
+/// Starts playback through Spirc without Web API round trips. Collections load as Spotify
+/// contexts that Spirc resolves itself; the checkpoint then follows Connect observations,
+/// like any other native load, instead of a pre-gathered membership list.
+fn play_with_connect(
+    source: &PlaySource,
+    store: &storage::Storage,
+    q: &mut Queue,
+    state: &mut AppState,
+    player: &mut Option<playback::Playback>,
+    metadata: &HashMap<SpotifyId, Track>,
+) -> Result<Response, AppError> {
+    let Some(connect) = player.as_ref().and_then(|p| p.connect.as_ref()) else {
+        return Err(safe(ErrorKind::Unavailable, "Spotify Connect is not ready"));
+    };
+    if let PlaySource::Track(track) = source {
+        let mut candidate = q.clone();
+        candidate
+            .activate_track(track.clone())
+            .map_err(|e| safe(ErrorKind::InvalidInput, e))?;
+        store.save_session(&candidate.snapshot).map_err(|e| {
+            safe(
+                ErrorKind::Internal,
+                &format!("could not save playback session: {e}"),
+            )
+        })?;
+        *q = candidate;
+        sync_queue(state, q);
+        state.player.current = metadata.get(track).cloned();
+        load_current(q, state, player, true);
+        state.player.status = PlaybackStatus::Loading;
+        return Ok(Response::Accepted);
+    }
+    let AuthState::Ready { user_id } = &state.auth else {
+        return Err(safe(ErrorKind::Authentication, "sign in first"));
+    };
+    let (uri, index) = super::connect::context_uri(source, user_id)
+        .ok_or_else(|| safe(ErrorKind::InvalidInput, "track is not a collection"))?;
+    connect
+        .load_context(uri, index, q.snapshot.shuffle, q.snapshot.repeat)
+        .map_err(|e| safe(ErrorKind::Unavailable, &e))?;
+    // Invalidates source loads still in flight from before this request.
+    sync_queue(state, q);
+    state.player.status = PlaybackStatus::Loading;
+    Ok(Response::Accepted)
 }
 
 /// Aborts authorization jobs when account/client ownership is invalidated.

@@ -11,6 +11,7 @@ mod topbar;
 mod tracklist;
 
 use super::icons::{self, Icon, glyph};
+use super::smooth_scroll::{Area, Metrics};
 use super::theme::Icons;
 use super::*;
 use iced::widget::text::Wrapping;
@@ -19,6 +20,16 @@ use iced::{Alignment, Length};
 
 /// Height of the now-playing bar.
 const PLAYER_HEIGHT: f32 = 80.0;
+
+/// Make wheel ticks over a scrollable glide instead of stepping.
+fn smooth_wheel<'a>(scroll: impl Into<Element<'a>>, area: Area) -> Element<'a> {
+    super::smooth_scroll::wheel(
+        scroll,
+        move |delta| Message::Wheel(area, delta),
+        Message::GlideStop(area),
+    )
+    .into()
+}
 
 impl Ui {
     /// Render the fixed application frame.

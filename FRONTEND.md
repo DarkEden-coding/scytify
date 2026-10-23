@@ -33,7 +33,7 @@
 
 ## Dependencies
 
-Bundles the Lucide icon font (about 0.9 MB, embedded with `include_bytes!`). Uses existing `iced 0.14` with `tiny-skia`, native window backends, Tokio, `image-without-codecs` and `advanced` (text measurement; it adds no crates); `image 0.25` with only PNG/JPEG; `serde`, `serde_json`, `directories`, `toml`. The `advanced` feature flag is the only manifest change; the lockfile is unchanged.
+Bundles the Lucide icon font (about 0.9 MB, embedded with `include_bytes!`). Uses existing `iced 0.14` with `wgpu` and `tiny-skia`, native window backends, Tokio, `image-without-codecs` and `advanced` (text measurement; it adds no crates); `image 0.25` with only PNG/JPEG; `serde`, `serde_json`, `directories`, `toml`. The `advanced` feature flag is the only manifest change; the lockfile is unchanged.
 
 ## Validation
 
@@ -114,3 +114,11 @@ not replace an unfinished settings draft.
 A disconnected backend or failed Quit displays a checkpoint-not-confirmed warning.
 A subsequent Quit or window close exits explicitly without claiming a successful
 checkpoint. Normal connected shutdown still waits for QuitReady.
+
+## Renderer
+
+Iced tries wgpu first and falls back to tiny-skia when no GPU adapter is available;
+`ICED_BACKEND=tiny-skia` forces the software renderer. tiny-skia anti-aliases every quad as
+a path, so a scrolled frame repaints the whole panel. In the offline preview at 2560 px,
+track lists then scroll at about 14 fps, against a steady 60 fps on wgpu.
+

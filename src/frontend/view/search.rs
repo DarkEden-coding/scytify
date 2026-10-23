@@ -137,7 +137,7 @@ impl Ui {
                 }))),
             ),
             TopResult::Track(t) => {
-                let play = Message::Action(Action::Play(PlaySource::Track(t.id.clone())));
+                let play = Message::PlayTrack(PlaySource::Track(t.id.clone()), Box::new(t.clone()));
                 // A song opens its album; without one, the card plays it.
                 let open: Message = t
                     .album
@@ -208,7 +208,8 @@ impl Ui {
                 .current
                 .as_ref()
                 .is_some_and(|t| t.id == item.id);
-            let play = Message::Action(Action::Play(PlaySource::Track(item.id.clone())));
+            let play =
+                Message::PlayTrack(PlaySource::Track(item.id.clone()), Box::new(item.clone()));
             let mut thumb = stack![self.cover(item.artwork_url(), THUMB, Shape::Cover)];
             if hovered && item.playable {
                 thumb = thumb.push(

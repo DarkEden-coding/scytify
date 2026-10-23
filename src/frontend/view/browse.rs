@@ -182,13 +182,13 @@ impl Ui {
                 .width(Length::Fill)
                 .padding(iced::Padding::ZERO.bottom(CONTENT_PADDING)),
         )
-        .id(iced::widget::Id::new(MAIN_SCROLL))
-        .on_scroll(|v| Message::Scroll(v.absolute_offset().y, v.bounds().height))
+        .id(Area::Main.id())
+        .on_scroll(|v| Message::Scrolled(Area::Main, Metrics::of(&v)))
         .direction(thin_scrollbar())
         .style(styles::scrollbar(&self.palette))
         .width(Length::Fill)
         .height(Length::Fill);
-        sensor(area)
+        sensor(smooth_wheel(area, Area::Main))
             .on_show(Message::MainResized)
             .on_resize(Message::MainResized)
             .into()

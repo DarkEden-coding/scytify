@@ -124,15 +124,12 @@ impl Ui {
             }
         }
         let list = scrollable(rows.padding(iced::Padding::ZERO.bottom(FADE)))
-            .on_scroll(|v| {
-                let y: f32 = v.absolute_offset().y;
-                let height: f32 = v.bounds().height;
-                Message::SidebarScroll(y, height, y + height >= v.content_bounds().height - 200.0)
-            })
+            .id(Area::Sidebar.id())
+            .on_scroll(|v| Message::Scrolled(Area::Sidebar, Metrics::of(&v)))
             .direction(gutter_scrollbar())
             .style(styles::scrollbar(p))
             .height(Length::Fill);
-        self.faded(list)
+        self.faded(smooth_wheel(list, Area::Sidebar))
     }
 
     /// Overlay a fade on the bottom edge of a side list, leaving the scrollbar gutter clear.

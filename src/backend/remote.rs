@@ -213,15 +213,12 @@ impl Api {
                 "context_uri": format!("spotify:album:{}", valid_id(album_id)?),
                 "offset": {"position": start_offset}, "position_ms": 0
             }),
-            PlaySource::LikedSongs { .. } => {
-                let loaded = self.load_source(token, source).await?;
-                // Web API play accepts at most 100 URIs. Preserve the selected occurrence,
-                // then provide the following bounded portion of the liked collection.
-                let uris = loaded
-                    .tracks
+            PlaySource::LikedSongs { start_offset } => {
+                // Web API play accepts at most 100 URIs: the selected occurrence and what follows.
+                let uris = self
+                    .liked_window(token, *start_offset)
+                    .await?
                     .iter()
-                    .skip(loaded.start)
-                    .take(100)
                     .map(track_uri)
                     .collect::<Result<Vec<_>, _>>()?;
                 json!({"uris": uris, "offset": {"position": 0}, "position_ms": 0})
