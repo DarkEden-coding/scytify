@@ -9,7 +9,7 @@
 use super::theme::{Palette, ShadowStyle, mix};
 use super::tint;
 use iced::widget::{self, button, container, rule, scrollable};
-use iced::{Background, Border, Color, Element, Shadow, Theme, Vector};
+use iced::{Background, Border, Color, Element, Shadow, Theme, Vector, border};
 
 /// Radius large enough to turn any button into a pill or circle.
 const PILL: f32 = 999.0;
@@ -407,7 +407,10 @@ pub fn popover(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
 }
 
 /// Full-width accent strip below the player ("Playing on ...") that opens the picker.
-pub fn banner(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+pub fn banner(
+    p: &Palette,
+    radius: border::Radius,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
     let p: Palette = *p;
     move |_, status| {
         let c = p.colors;
@@ -419,7 +422,7 @@ pub fn banner(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style +
         button::Style {
             background: Some(background.into()),
             text_color: c.on_accent,
-            border: Border::default(),
+            border: Border::default().rounded(radius),
             shadow: Shadow::default(),
             snap: true,
         }
@@ -463,11 +466,15 @@ pub fn choice(
 }
 
 /// Window background behind all panels.
-pub fn root(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn root(
+    p: &Palette,
+    radius: border::Radius,
+) -> impl Fn(&Theme) -> container::Style + 'static {
     let c = p.colors;
     move |_| container::Style {
         background: Some(c.background.into()),
         text_color: Some(c.text),
+        border: Border::default().rounded(radius),
         ..container::Style::default()
     }
 }

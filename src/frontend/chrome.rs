@@ -19,6 +19,8 @@ pub(super) const ZOOM_STEP: f32 = 0.1;
 /// Thickness of the invisible edge grips and the edge length of the corner grips.
 const GRIP: f32 = 6.0;
 const CORNER: f32 = 10.0;
+/// Corner radius of the window when the app draws its own frame.
+const WINDOW_RADIUS: f32 = 10.0;
 /// Where a window that landed on no monitor is moved to.
 const FALLBACK_POSITION: iced::Point = iced::Point::new(64.0, 64.0);
 
@@ -49,6 +51,8 @@ impl Ui {
             min_size: Some(self.min_size()),
             maximized: self.maximized,
             decorations: self.system_title_bar,
+            // Transparent so the corners of the custom frame can be rounded.
+            transparent: true,
             exit_on_close_request: false,
             icon: window::icon::from_rgba(rgba.pixels, rgba.width, rgba.height).ok(),
             ..Default::default()
@@ -68,6 +72,16 @@ impl Ui {
     /// Whether the app draws its own title bar, window buttons and resize grips.
     pub(super) fn custom_chrome(&self) -> bool {
         !self.system_title_bar
+    }
+
+    /// Corner radius of the window frame: only the app's own frame is rounded, and not
+    /// while maximized, when the corners are the screen's.
+    pub(super) fn window_radius(&self) -> f32 {
+        if self.custom_chrome() && !self.maximized {
+            WINDOW_RADIUS
+        } else {
+            0.0
+        }
     }
 
     /// Ask the window system whether the window is maximized and where it is; the answer

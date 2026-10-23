@@ -48,15 +48,22 @@ impl Ui {
             body = body.push(self.lyrics_view());
         }
         let edge: f32 = self.frame_edge();
+        let banner = self.connect_banner();
+        // The banner takes over the bottom corners when it sits under the frame.
+        let corners: iced::border::Radius = if banner.is_some() {
+            iced::border::top(self.window_radius())
+        } else {
+            self.window_radius().into()
+        };
         let frame = container(
             column![body, container(self.player_view()).height(PLAYER_HEIGHT)].spacing(edge),
         )
-        .style(styles::root(&self.palette))
+        .style(styles::root(&self.palette, corners))
         .padding(iced::Padding::new(edge).bottom(0.0))
         .width(Length::Fill)
         .height(Length::Fill);
         let mut window = column![frame].width(Length::Fill).height(Length::Fill);
-        if let Some(banner) = self.connect_banner() {
+        if let Some(banner) = banner {
             window = window.push(banner);
         }
         let mut layers = stack![window, self.split_handles()];

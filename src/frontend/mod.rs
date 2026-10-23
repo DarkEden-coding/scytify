@@ -266,6 +266,7 @@ pub fn run(port: FrontendPort) -> iced::Result {
     .executor::<executor::SharedExecutor>()
     .title(Ui::window_title)
     .theme(Ui::iced_theme)
+    .style(Ui::window_style)
     .scale_factor(Ui::scale_factor)
     .font(icons::FONT_BYTES)
     .subscription(Ui::subscription)
@@ -1519,6 +1520,14 @@ impl Ui {
     /// Apply declarative colors without changing widget hierarchy or layout.
     fn iced_theme(&self, _: window::Id) -> Theme {
         self.palette.iced_theme()
+    }
+    /// Leave the area behind the frame clear, so its rounded corners show the desktop. The
+    /// frame paints the opaque background itself.
+    fn window_style(&self, theme: &Theme) -> iced::theme::Style {
+        iced::theme::Style {
+            background_color: iced::Color::TRANSPARENT,
+            text_color: theme.palette().text,
+        }
     }
     /// Name the window after the current page.
     fn window_title(&self, _: window::Id) -> String {
