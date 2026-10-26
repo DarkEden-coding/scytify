@@ -50,6 +50,9 @@ strip = "debuginfo"
 librespot-oauth = { path = "vendor/librespot-oauth" }
 librespot-connect = { path = "vendor/librespot-connect" }
 librespot-playback = { path = "vendor/librespot-playback" }
+# hyper-proxy2 0.1.0 (via librespot-core) pins rustls 0.22 / rustls-webpki 0.102,
+# which have unpatched advisories; the vendored copy moves it to rustls 0.23.
+hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 
 [workspace]
 members = ["vendor/librespot-oauth"]
