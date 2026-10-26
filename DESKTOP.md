@@ -45,7 +45,7 @@ Root checks and tests pass. The release app registered its MPRIS service on the 
 `assets/icons/scytify.svg` is the hand-written source (dark grey neomorphic tile, recessed
 grey disc holding five glowing green waveform bars). `assets/icons/scytify-{16,32,48,64,128,256,512}.png`
 are renders of it (`magick -background none -density <4 x s * 96 / 512> scytify.svg -resize <s>x<s>`); the 16px one comes from `scytify-16.svg`, a simplified three-bar, pixel-aligned version so it stays crisp.
-Sizes 16, 32, 48, 64 and 256 are embedded (`src/app_icon.rs`) for the Iced window icon.
+The in-app (window) icon is the earlier green design instead: `assets/icons/scytify-app.svg` and `scytify-app-{16,32,48,64,256}.png` (16px from `scytify-app-16.svg`), embedded in `src/app_icon.rs` for the Iced window icon. The grey icon above is the dock and launcher icon.
 The app has no tray entry: it is a plain window app, and closing the window quits.
 
 The window sets Wayland `app_id` / X11 class `scytify`, matching `packaging/scytify.desktop`

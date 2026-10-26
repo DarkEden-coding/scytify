@@ -1,15 +1,15 @@
-//! The application icon, embedded as PNG renders of `assets/icons/scytify.svg`.
+//! The application icon, embedded as PNG renders of `assets/icons/scytify-app.svg`.
 
 /// Edge lengths of the embedded renders, smallest first.
 pub const SIZES: [u32; 5] = [16, 32, 48, 64, 256];
 
 /// Embedded PNG for each entry of [`SIZES`].
 const PNGS: [&[u8]; 5] = [
-    include_bytes!("../assets/icons/scytify-16.png"),
-    include_bytes!("../assets/icons/scytify-32.png"),
-    include_bytes!("../assets/icons/scytify-48.png"),
-    include_bytes!("../assets/icons/scytify-64.png"),
-    include_bytes!("../assets/icons/scytify-256.png"),
+    include_bytes!("../assets/icons/scytify-app-16.png"),
+    include_bytes!("../assets/icons/scytify-app-32.png"),
+    include_bytes!("../assets/icons/scytify-app-48.png"),
+    include_bytes!("../assets/icons/scytify-app-64.png"),
+    include_bytes!("../assets/icons/scytify-app-256.png"),
 ];
 
 /// Application id: the Wayland `app_id` and X11 class, matching `scytify.desktop`.
