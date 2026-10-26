@@ -46,6 +46,7 @@ Root checks and tests pass. The release app registered its MPRIS service on the 
 grey disc holding five glowing green waveform bars). `assets/icons/scytify-{16,32,48,64,128,256,512}.png`
 are renders of it (`magick -background none -density <4 x s * 96 / 512> scytify.svg -resize <s>x<s>`); the 16px one comes from `scytify-16.svg`, a simplified three-bar, pixel-aligned version so it stays crisp.
 The in-app (window) icon is the earlier green design instead: `assets/icons/scytify-app.svg` and `scytify-app-{16,32,48,64,256}.png` (16px from `scytify-app-16.svg`), embedded in `src/app_icon.rs` for the Iced window icon. The grey icon above is the dock and launcher icon.
+The icon reflects app state. Not running: grey bars (`scytify-closed-{16,32,64,128,256,512}.png`, rendered by `examples/render_dock_icon.rs` and used for the macOS bundle icon). Running: `src/dock_icon.rs` redraws the neomorphic icon in software, with the middle three bars small while not playing and all five animating while playing. `src/desktop/icon.rs` picks the frames and drives any `IconSink`; `src/desktop/macos_dock.rs` sets the Dock icon. Another platform adds an `IconSink` and an arm in `desktop::run_icon`; Linux has none yet, so its launcher icon stays static.
 The app has no tray entry: it is a plain window app, and closing the window quits.
 
 The window sets Wayland `app_id` / X11 class `scytify`, matching `packaging/scytify.desktop`

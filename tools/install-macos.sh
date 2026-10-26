@@ -34,14 +34,16 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# iconutil wants each size at 1x and 2x; the 1024 px slot (512@2x) is optional.
+# The bundle icon is what the OS shows while the app is not running: the grey "closed" bars.
+# A running app replaces it at runtime (src/dock_icon.rs). iconutil wants each size at 1x and
+# 2x; the 1024 px slot (512@2x) is optional.
 iconset="$work/$name.iconset"
 mkdir "$iconset"
 for size in 16 32 128 256 512; do
-    cp "assets/icons/$name-$size.png" "$iconset/icon_${size}x${size}.png"
+    cp "assets/icons/$name-closed-$size.png" "$iconset/icon_${size}x${size}.png"
 done
 for size in 16 32 128 256; do
-    cp "assets/icons/$name-$((size * 2)).png" "$iconset/icon_${size}x${size}@2x.png"
+    cp "assets/icons/$name-closed-$((size * 2)).png" "$iconset/icon_${size}x${size}@2x.png"
 done
 iconutil -c icns "$iconset" -o "$work/$name.icns"
 

@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = desktop_events.send(contracts::Event::Notice(error)).await;
         }
     });
+    let icon = runtime.spawn(desktop::run_icon(frontend_port.state.clone()));
     let backend = runtime.spawn(async move {
         let result = AssertUnwindSafe(backend::run(backend_port)).catch_unwind().await;
         let error = match result {
@@ -67,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     desktop.abort();
+    icon.abort();
     runtime.shutdown_timeout(Duration::from_secs(2));
     ui_result.map_err(Into::into)
 }
