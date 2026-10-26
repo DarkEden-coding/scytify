@@ -543,10 +543,7 @@ fn finish_job(
                     source.metadata,
                     q.snapshot.current.as_ref().map(|e| &e.track_id),
                 );
-                state.connect.active_device_id = state.connect.this_device_id.clone();
-                for device in &mut state.connect.devices {
-                    device.is_active = device.is_this_app;
-                }
+                state.connect.activate_this_device();
                 state.connect.context_uri = transfer.context_uri;
                 state.connect.queue_preview.clear();
                 sync_queue(state, q);
@@ -1411,10 +1408,22 @@ fn handle_player_event(
     let Some((update, observed_at)) = player.and_then(|p| p.update(event)) else {
         return false;
     };
-    if state.connect.is_remote() {
-        return false;
-    }
     let spirc = player.is_some_and(|p| p.connect.is_some());
+    if state.connect.is_remote() {
+        // Spirc decodes only as the active device, so a transfer here can start playing
+        // before the account snapshot reports it. Without this the UI would stay on the
+        // old device and send its controls there while this computer plays.
+        let local_start = matches!(
+            update,
+            playback::Update::Loading(..)
+                | playback::Update::Playing(_)
+                | playback::Update::Track(_)
+        );
+        if !(spirc && local_start) {
+            return false;
+        }
+        state.connect.activate_this_device();
+    }
     // Spirc chooses tracks and options itself, and account snapshots lag behind it,
     // so its decoder is the source for what this device plays.
     match update {

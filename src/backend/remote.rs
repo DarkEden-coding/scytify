@@ -1,5 +1,5 @@
 //! Official Web API playback observation and commands. No internal control endpoints.
-use super::api::{Api, err, parse_track, response_json, valid_id};
+use super::api::{Api, check_status, err, parse_track, response_json, valid_id};
 use crate::{contracts::*, domain::*};
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -64,9 +64,13 @@ impl Api {
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.as_str())),
         );
+        let write = method != Method::GET;
         let mut request = self.http.request(method, url).bearer_auth(token);
         if let Some(body) = body {
             request = request.json(&body);
+        } else if write {
+            // Spotify answers 411 Length Required to a body-less PUT or POST such as /pause.
+            request = request.header(reqwest::header::CONTENT_LENGTH, 0);
         }
         let sent_at = Instant::now();
         let response = request
@@ -77,7 +81,16 @@ impl Api {
         // Spotify's timestamp can be stale. Estimate the measurement using half
         // the request RTT, excluding JSON parsing and subsequent detail requests.
         let observed_at = request_midpoint(sent_at, received_at);
-        let result = response_json(response).await.map_err(playback_scope);
+        if !response.status().is_success() {
+            log::warn!("player{path} answered {}", response.status());
+        }
+        // Controls succeed with an empty or non-JSON body that callers never read.
+        let result = if write {
+            check_status(&response).map(|()| Value::Null)
+        } else {
+            response_json(response).await
+        }
+        .map_err(playback_scope);
         if let Err(error) = &result
             && error.kind == ErrorKind::RateLimited
         {

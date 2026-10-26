@@ -223,6 +223,14 @@ impl ConnectState {
         }
     }
 
+    /// Marks this app's device as the one playing.
+    pub fn activate_this_device(&mut self) {
+        self.active_device_id = self.this_device_id.clone();
+        for device in &mut self.devices {
+            device.is_active = device.is_this_app;
+        }
+    }
+
     pub fn is_remote(&self) -> bool {
         match self.active_device_id.as_ref() {
             Some(id) => Some(id) != self.this_device_id.as_ref(),

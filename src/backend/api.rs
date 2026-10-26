@@ -548,6 +548,17 @@ impl Api {
 }
 /// Maps shared Spotify HTTP status behavior and decodes one JSON body.
 pub(super) async fn response_json(r: reqwest::Response) -> Result<serde_json::Value, AppError> {
+    check_status(&r)?;
+    if r.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(serde_json::Value::Null);
+    }
+    r.json()
+        .await
+        .map_err(|_| err(ErrorKind::Network, "Spotify returned invalid data"))
+}
+
+/// Maps Spotify's rate-limit, authorization, and failure statuses to errors.
+pub(super) fn check_status(r: &reqwest::Response) -> Result<(), AppError> {
     if r.status().as_u16() == 429 {
         let retry = r
             .headers()
@@ -561,24 +572,14 @@ pub(super) async fn response_json(r: reqwest::Response) -> Result<serde_json::Va
         });
     }
     match r.status().as_u16() {
-        401 => return Err(err(ErrorKind::Authentication, "authorization expired")),
-        403 => {
-            return Err(err(
-                ErrorKind::Permission,
-                "Spotify denied this endpoint for this account or app mode",
-            ));
-        }
-        _ if !r.status().is_success() => {
-            return Err(err(ErrorKind::Network, "Spotify API request failed"));
-        }
-        _ => {}
+        401 => Err(err(ErrorKind::Authentication, "authorization expired")),
+        403 => Err(err(
+            ErrorKind::Permission,
+            "Spotify denied this endpoint for this account or app mode",
+        )),
+        _ if !r.status().is_success() => Err(err(ErrorKind::Network, "Spotify API request failed")),
+        _ => Ok(()),
     }
-    if r.status() == reqwest::StatusCode::NO_CONTENT {
-        return Ok(serde_json::Value::Null);
-    }
-    r.json()
-        .await
-        .map_err(|_| err(ErrorKind::Network, "Spotify returned invalid data"))
 }
 
 /// Validates an ingress Spotify base62 identifier.
