@@ -42,8 +42,8 @@ Root checks and tests pass. The release app registered its MPRIS service on the 
 
 ## Application icon and window identity
 
-`assets/icons/custom-spotify.svg` is the hand-written source (rounded green tile, near-black
-disc holding five green waveform bars). `assets/icons/custom-spotify-{16,32,48,64,128,256,512}.png`
+`assets/icons/custom-spotify.svg` is the hand-written source (dark grey neomorphic tile, recessed
+grey disc holding five glowing green waveform bars). `assets/icons/custom-spotify-{16,32,48,64,128,256,512}.png`
 are renders of it (`magick -background none -density <4 x s * 96 / 512> custom-spotify.svg -resize <s>x<s>`); the 16px one comes from `custom-spotify-16.svg`, a simplified three-bar, pixel-aligned version so it stays crisp.
 Sizes 16, 32, 48, 64 and 256 are embedded (`src/app_icon.rs`) for the Iced window icon.
 The app has no tray entry: it is a plain window app, and closing the window quits.

@@ -2,13 +2,42 @@
   <title>Custom Spotify</title>
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2BE06B"/>
+      <stop offset="0" stop-color="#34353a"/>
+      <stop offset="1" stop-color="#17181b"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="well" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#121316"/>
+      <stop offset="1" stop-color="#2b2c31"/>
+    </linearGradient>
+    <linearGradient id="well-rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="bar" gradientUnits="userSpaceOnUse" x1="0" y1="150" x2="0" y2="362">
+      <stop offset="0" stop-color="#3CF07C"/>
       <stop offset="1" stop-color="#17B24C"/>
     </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
   </defs>
   <rect width="512" height="512" rx="116" fill="url(#tile)"/>
-  <circle cx="256" cy="256" r="188" fill="#121212"/>
-  <g fill="none" stroke="#1ED760" stroke-width="32" stroke-linecap="round">
+  <rect x="2" y="2" width="508" height="508" rx="114" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <circle cx="256" cy="256" r="188" fill="url(#well)"/>
+  <circle cx="256" cy="256" r="187" fill="none" stroke="url(#well-rim)" stroke-width="3"/>
+  <g fill="none" stroke="#1ED760" stroke-width="32" stroke-linecap="round" opacity="0.4" filter="url(#glow)">
+    <path d="M 148 224 V 288"/>
+    <path d="M 202 184 V 328"/>
+    <path d="M 256 150 V 362"/>
+    <path d="M 310 190 V 322"/>
+    <path d="M 364 230 V 282"/>
+  </g>
+  <g fill="none" stroke="url(#bar)" stroke-width="32" stroke-linecap="round">
     <path d="M 148 224 V 288"/>
     <path d="M 202 184 V 328"/>
     <path d="M 256 150 V 362"/>
