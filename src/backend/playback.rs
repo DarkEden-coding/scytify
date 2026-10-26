@@ -381,7 +381,7 @@ fn device_id(client_id: &str) -> String {
     let machine = std::fs::read_to_string("/etc/machine-id")
         .unwrap_or_else(|_| super::connect::device_name());
     let user = std::env::var("USER").unwrap_or_default();
-    let digest = Sha256::digest(format!("custom-spotify:{machine}:{user}:{client_id}"));
+    let digest = Sha256::digest(format!("scytify:{machine}:{user}:{client_id}"));
     format!("{digest:x}")[..40].into()
 }
 

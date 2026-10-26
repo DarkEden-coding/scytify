@@ -1,4 +1,4 @@
-# Custom Spotify
+# Scytify
 
 A personal, native Rust Spotify client for Linux. Iced draws the UI without a
 webview; librespot provides unofficial local playback. Spotify Premium and a
@@ -20,7 +20,7 @@ Linux is the primary target. On macOS (Apple Silicon), the same command builds w
 Xcode's command-line tools and Rust alone: audio plays through CoreAudio and
 credentials live in the login Keychain. macOS media keys and AirPods playback controls
 use the native Now Playing integration; Linux media keys use MPRIS.
-`tools/install.sh` builds and installs (or updates) `~/Applications/Custom Spotify.app`,
+`tools/install.sh` builds and installs (or updates) `~/Applications/Scytify.app`,
 which Spotlight, Launchpad and other launchers pick up. It is ad-hoc signed, so after
 an update macOS may ask once more for Keychain access.
 
@@ -29,7 +29,7 @@ an update macOS may ask once more for Keychain access.
 1. Create a personal app at <https://developer.spotify.com/dashboard>.
 2. Register this exact redirect URI: `http://127.0.0.1:43817/callback`.
 3. Ensure your Premium account is authorized to use that development-mode app.
-4. Enter the public Client ID in Custom Spotify's Settings. Do not enter a client secret.
+4. Enter the public Client ID in Scytify's Settings. Do not enter a client secret.
 5. Start authorization and complete Spotify's consent page in your browser.
 6. In Settings → Account, select **Enable playback & Spotify Connect** and complete
    one extra, one-time Spotify consent. The device picker offers the same button.
@@ -43,7 +43,7 @@ songs and save albums and playlists), streaming, and playback permissions
 Settings and sign in again to grant the new scopes. Spotify does not upgrade old
 tokens automatically. Missing library or playback access reports a Permission error.
 
-Custom Spotify registers as a Spotify Connect device and follows the active player
+Scytify registers as a Spotify Connect device and follows the active player
 on your account. Connect uses librespot's unofficial protocol and can break when
 Spotify changes it. Observation falls back to the official Web API when live
 updates fail. Playback control requires Premium and Spotify may restrict developer
@@ -107,7 +107,7 @@ empty bar to move it and drag the edges to resize. Settings can switch to the sy
 Size, maximized state, zoom (Ctrl+= / Ctrl+- / Ctrl+0, 80-150%) and, where the platform allows,
 position are remembered. To install the app icon and launcher entry, see `DESKTOP.md`.
 
-Custom Spotify is a plain window app with no tray entry: closing the window quits
+Scytify is a plain window app with no tray entry: closing the window quits
 and stops playback. Media controls use this app's MPRIS service, not the
 official Spotify application's service.
 
@@ -126,7 +126,7 @@ track plays alone. Other Spotify clients cannot discover this fallback device.
 Logging is silent by default. Capture Connect diagnostics with:
 
 ```sh
-RUST_LOG=librespot=debug,custom_spotify=debug cargo run --release --locked 2> /tmp/custom-spotify.log
+RUST_LOG=librespot=debug,scytify=debug cargo run --release --locked 2> /tmp/scytify.log
 ```
 
 The Connect failure is logged at warn level. Review account and device metadata in

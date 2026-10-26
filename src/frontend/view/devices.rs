@@ -51,7 +51,10 @@ impl Ui {
             .width(Length::Fill)
             .height(BANNER_HEIGHT)
             .padding([0.0, p.shape.spacing * 2.0])
-            .style(styles::banner(p, iced::border::bottom(self.window_radius())))
+            .style(styles::banner(
+                p,
+                iced::border::bottom(self.window_radius()),
+            ))
             .on_press(Message::Devices)
             .into(),
         )

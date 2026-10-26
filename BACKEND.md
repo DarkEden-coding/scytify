@@ -63,7 +63,7 @@ Playback creates one librespot 0.8 `Session` with the KEYMASTER client ID and
 separate playback credentials, one ALSA `Player`, and one software mixer. The
 configured developer ID still seeds the existing stable device ID; changing the
 session's OAuth identity does not change the advertised device identity. Spirc
-registers `Custom Spotify (hostname)` as a Computer Connect device and drives that
+registers `Scytify (hostname)` as a Computer Connect device and drives that
 same player. It owns local transfer handling, queue advancement, shuffle/repeat,
 and published device state. The decoder requests 320 kbps, normalization, gapless
 playback, and one-second position events.
@@ -102,7 +102,7 @@ The custom queue remains the local fallback when Connect initialization fails.
 After Web API sign-in the picker includes this computer. Until playback consent
 creates a session, that synthetic row is disabled and explains the required consent.
 Whenever the decoder exists, local handoff remains available. Until Connect
-registers it, its stable local ID is `custom-spotify:local-player`; this ID is never
+registers it, its stable local ID is `scytify:local-player`; this ID is never
 sent to Spotify's transfer endpoint. A real Connect entry replaces the synthetic
 entry without duplication.
 
@@ -226,7 +226,7 @@ account, transfer, audio output, or real-device protocol compatibility was teste
 Logging defaults to off. To capture the failure reason and librespot internals:
 
 ```sh
-RUST_LOG=librespot=debug,custom_spotify=debug cargo run --release --locked 2> /tmp/custom-spotify.log
+RUST_LOG=librespot=debug,scytify=debug cargo run --release --locked 2> /tmp/scytify.log
 ```
 
 `connect_error` is logged at warn level and produces one concise notice per player

@@ -776,10 +776,8 @@ mod tests {
 
     #[tokio::test]
     async fn lyrics_dispatch_requires_its_key_serves_signed_out_cache_and_cancels_jobs() {
-        let root = std::env::temp_dir().join(format!(
-            "custom-spotify-lyrics-dispatch-{}",
-            rand::random::<u64>()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("scytify-lyrics-dispatch-{}", rand::random::<u64>()));
         let store = storage::Storage::open_at(&root).unwrap();
         let api = api::Api::new().unwrap();
         let track_id = SpotifyId("0123456789012345678901".into());
@@ -887,8 +885,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_queue_edits_never_mutate_the_local_fallback_queue() {
-        let root =
-            std::env::temp_dir().join(format!("custom-spotify-routing-{}", rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!("scytify-routing-{}", rand::random::<u64>()));
         let store = storage::Storage::open_at(&root).unwrap();
         let api = api::Api::new().unwrap();
         let mut lyrics = lyrics::Client::new(None).unwrap();

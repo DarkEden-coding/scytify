@@ -186,7 +186,7 @@ impl Drop for Connect {
 pub(super) fn device_name() -> String {
     let hostname = std::fs::read_to_string("/etc/hostname").unwrap_or_else(|_| "Computer".into());
     format!(
-        "Custom Spotify ({})",
+        "Scytify ({})",
         hostname.trim().chars().take(64).collect::<String>()
     )
 }

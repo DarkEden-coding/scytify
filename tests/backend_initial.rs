@@ -1,4 +1,4 @@
-use custom_spotify::{
+use scytify::{
     backend::initial_state,
     domain::{AuthState, PlaybackStatus},
 };

@@ -9,7 +9,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
     exec tools/install-macos.sh
 fi
 
-name=custom-spotify
+name=scytify
 bin="$HOME/.local/bin/$name"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 
@@ -20,7 +20,7 @@ if pgrep -x "$name" >/dev/null; then
     was_running=true
     echo "Quitting the running app..."
     dbus-send --session --type=method_call \
-        --dest=org.mpris.MediaPlayer2.com.customspotify.CustomSpotify \
+        --dest=org.mpris.MediaPlayer2.com.scytify.Scytify \
         /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Quit 2>/dev/null || true
     for _ in $(seq 50); do
         pgrep -x "$name" >/dev/null || break

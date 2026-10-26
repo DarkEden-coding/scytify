@@ -6,7 +6,7 @@ use super::{
 use crate::{contracts::*, domain::*};
 use std::time::Instant;
 
-pub(super) const LOCAL_DEVICE_ID: &str = "custom-spotify:local-player";
+pub(super) const LOCAL_DEVICE_ID: &str = "scytify:local-player";
 
 pub(super) struct LocalTransfer {
     pub pause_device_id: Option<String>,

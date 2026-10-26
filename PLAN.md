@@ -1,4 +1,4 @@
-# Custom Spotify — implementation handoff
+# Scytify — implementation handoff
 
 ## Status and ownership
 
@@ -77,9 +77,9 @@ window, theme, transient selection and decoded artwork only.
 Backend public functions to implement (with rustdoc):
 
 ```rust
-pub fn initial_state() -> custom_spotify::domain::AppState;
-pub async fn run(port: custom_spotify::contracts::BackendPort)
-    -> Result<(), custom_spotify::contracts::AppError>;
+pub fn initial_state() -> scytify::domain::AppState;
+pub async fn run(port: scytify::contracts::BackendPort)
+    -> Result<(), scytify::contracts::AppError>;
 ```
 
 Paths inside the library use `crate::...`.

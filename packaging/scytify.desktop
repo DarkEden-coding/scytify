@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Custom Spotify
+Name=Scytify
 Comment=Native personal Spotify player
-Exec=custom-spotify
-Icon=custom-spotify
-StartupWMClass=custom-spotify
+Exec=scytify
+Icon=scytify
+StartupWMClass=scytify
 Terminal=false
 Categories=AudioVideo;Audio;Player;
 StartupNotify=true

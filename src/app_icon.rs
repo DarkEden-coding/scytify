@@ -1,19 +1,19 @@
-//! The application icon, embedded as PNG renders of `assets/icons/custom-spotify.svg`.
+//! The application icon, embedded as PNG renders of `assets/icons/scytify.svg`.
 
 /// Edge lengths of the embedded renders, smallest first.
 pub const SIZES: [u32; 5] = [16, 32, 48, 64, 256];
 
 /// Embedded PNG for each entry of [`SIZES`].
 const PNGS: [&[u8]; 5] = [
-    include_bytes!("../assets/icons/custom-spotify-16.png"),
-    include_bytes!("../assets/icons/custom-spotify-32.png"),
-    include_bytes!("../assets/icons/custom-spotify-48.png"),
-    include_bytes!("../assets/icons/custom-spotify-64.png"),
-    include_bytes!("../assets/icons/custom-spotify-256.png"),
+    include_bytes!("../assets/icons/scytify-16.png"),
+    include_bytes!("../assets/icons/scytify-32.png"),
+    include_bytes!("../assets/icons/scytify-48.png"),
+    include_bytes!("../assets/icons/scytify-64.png"),
+    include_bytes!("../assets/icons/scytify-256.png"),
 ];
 
-/// Application id: the Wayland `app_id` and X11 class, matching `custom-spotify.desktop`.
-pub const APP_ID: &str = "custom-spotify";
+/// Application id: the Wayland `app_id` and X11 class, matching `scytify.desktop`.
+pub const APP_ID: &str = "scytify";
 
 /// A decoded RGBA8 icon.
 pub struct Rgba {

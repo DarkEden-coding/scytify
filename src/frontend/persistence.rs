@@ -43,7 +43,7 @@ pub(super) struct Preferences {
 impl Preferences {
     /// Resolve the platform-specific application configuration file.
     fn path() -> Result<std::path::PathBuf, String> {
-        directories::ProjectDirs::from("", "CustomSpotify", "CustomSpotify")
+        directories::ProjectDirs::from("", "Scytify", "Scytify")
             .map(|p| p.config_dir().join("frontend-v1.json"))
             .ok_or_else(|| "Cannot locate frontend preferences directory".into())
     }

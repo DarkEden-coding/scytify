@@ -112,7 +112,7 @@ impl Ui {
             ),
             self.setting_section(
                 "Playback",
-                "When an album, playlist or song ends, keep playing similar songs. A change applies the next time Custom Spotify starts.",
+                "When an album, playlist or song ends, keep playing similar songs. A change applies the next time Scytify starts.",
                 self.autoplay_choice(),
             ),
             self.setting_section(
@@ -162,7 +162,7 @@ impl Ui {
             self.setting_section(
                 "Session",
                 "Quit stops playback and saves the current queue.",
-                self.control(self.icon_label(Icon::Power, "Quit Custom Spotify"))
+                self.control(self.icon_label(Icon::Power, "Quit Scytify"))
                     .on_press(Message::Action(Action::Quit))
                     .into(),
             ),

@@ -466,10 +466,7 @@ pub fn choice(
 }
 
 /// Window background behind all panels.
-pub fn root(
-    p: &Palette,
-    radius: border::Radius,
-) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn root(p: &Palette, radius: border::Radius) -> impl Fn(&Theme) -> container::Style + 'static {
     let c = p.colors;
     move |_| container::Style {
         background: Some(c.background.into()),

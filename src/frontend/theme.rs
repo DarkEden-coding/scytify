@@ -337,7 +337,7 @@ impl Palette {
     pub fn iced_theme(&self) -> iced::Theme {
         let c: &Colors = &self.colors;
         iced::Theme::custom(
-            "Custom Spotify",
+            "Scytify",
             iced::theme::Palette {
                 background: c.background,
                 text: c.text,

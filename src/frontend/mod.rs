@@ -1669,9 +1669,9 @@ impl Ui {
     /// Name the window after the current page.
     fn window_title(&self, _: window::Id) -> String {
         if self.settings {
-            "Custom Spotify — Settings".into()
+            "Scytify — Settings".into()
         } else {
-            format!("Custom Spotify — {}", self.title)
+            format!("Scytify — {}", self.title)
         }
     }
 }

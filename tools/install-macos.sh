@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Build the release binary and install it as "~/Applications/Custom Spotify.app" for the current
+# Build the release binary and install it as "~/Applications/Scytify.app" for the current
 # user, so Spotlight, Launchpad, Raycast and Alfred find it. A running instance is asked to quit,
 # then the app is opened from the new bundle.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-name=custom-spotify
-display_name="Custom Spotify"
-bundle_id=com.customspotify.CustomSpotify
+name=scytify
+display_name="Scytify"
+bundle_id=com.scytify.Scytify
 app="$HOME/Applications/$display_name.app"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 

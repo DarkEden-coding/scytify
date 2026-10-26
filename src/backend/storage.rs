@@ -15,7 +15,7 @@ pub(crate) struct Storage {
 impl Storage {
     /// Opens the per-user data database and applies its small versioned schema.
     pub(crate) fn open() -> Result<Self, String> {
-        let dirs = ProjectDirs::from("dev", "CustomSpotify", "CustomSpotify")
+        let dirs = ProjectDirs::from("dev", "Scytify", "Scytify")
             .ok_or("user data directory is unavailable")?;
         Self::open_at(dirs.data_local_dir())
     }
@@ -326,8 +326,7 @@ mod tests {
     #[test]
     fn lyrics_cache_expires_success_and_missing_entries_and_clear_removes_both() {
         use crate::domain::{LyricsCredit, LyricsSource, LyricsSync};
-        let root =
-            std::env::temp_dir().join(format!("custom-spotify-lyrics-{}", rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!("scytify-lyrics-{}", rand::random::<u64>()));
         let store = Storage::open_at(&root).unwrap();
         let track_id = SpotifyId("0123456789012345678901".into());
         let lyrics = Some(Lyrics {
@@ -392,8 +391,7 @@ mod tests {
     /// Listen history survives a restart and Clear cache, and repeat plays only count up.
     #[test]
     fn listen_history_persists_and_survives_clearing_the_cache() {
-        let root =
-            std::env::temp_dir().join(format!("custom-spotify-history-{}", rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!("scytify-history-{}", rand::random::<u64>()));
         let store = Storage::open_at(&root).unwrap();
         let a = SpotifyId("0123456789012345678901".into());
         let b = SpotifyId("1123456789012345678901".into());
@@ -420,8 +418,7 @@ mod tests {
     #[test]
     fn audio_cache_is_measured_and_cleared() {
         assert_eq!(artwork_budget(1000) + audio_budget(1000), 1000);
-        let root =
-            std::env::temp_dir().join(format!("custom-spotify-audio-{}", rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!("scytify-audio-{}", rand::random::<u64>()));
         let store = Storage::open_at(&root).unwrap();
         let shard = store.audio_dir().join("ab");
         std::fs::create_dir_all(&shard).unwrap();
@@ -437,8 +434,7 @@ mod tests {
 
     #[test]
     fn artwork_cache_accounts_reads_and_enforces_total_limit() {
-        let root =
-            std::env::temp_dir().join(format!("custom-spotify-cache-{}", rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!("scytify-cache-{}", rand::random::<u64>()));
         let store = Storage::open_at(&root).unwrap();
         store.cache_artwork("one", &[1; 8], 12).unwrap();
         assert_eq!(store.cached_artwork("one").unwrap(), Some(vec![1; 8]));

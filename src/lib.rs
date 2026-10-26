@@ -5,3 +5,4 @@ pub mod contracts;
 pub mod desktop;
 pub mod domain;
 pub mod frontend;
+pub mod migrate;

@@ -15,7 +15,7 @@ pub(super) struct Client {
 impl Client {
     pub(super) fn new(key: Option<String>) -> Result<Self, AppError> {
         let http = super::http_client()
-            .user_agent(concat!("CustomSpotify/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Scytify/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(20))
             .redirect(reqwest::redirect::Policy::none())
             .build()

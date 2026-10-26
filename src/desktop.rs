@@ -30,7 +30,7 @@ mod linux {
             id: request_id(),
             action,
         })
-        .map_err(|_| zbus::fdo::Error::Failed("Custom Spotify command queue is busy".into()))
+        .map_err(|_| zbus::fdo::Error::Failed("Scytify command queue is busy".into()))
     }
 
     #[derive(Clone)]
@@ -44,7 +44,7 @@ mod linux {
         async fn raise(&self) -> zbus::fdo::Result<()> {
             self.events
                 .try_send(Event::ShowWindow)
-                .map_err(|_| zbus::fdo::Error::Failed("Custom Spotify event queue is busy".into()))
+                .map_err(|_| zbus::fdo::Error::Failed("Scytify event queue is busy".into()))
         }
         async fn quit(&self) -> zbus::fdo::Result<()> {
             send_command(&self.commands, Action::Quit)
@@ -68,10 +68,10 @@ mod linux {
             Ok(false)
         }
         async fn identity(&self) -> zbus::fdo::Result<String> {
-            Ok("Custom Spotify".into())
+            Ok("Scytify".into())
         }
         async fn desktop_entry(&self) -> zbus::fdo::Result<String> {
-            Ok("custom-spotify".into())
+            Ok("scytify".into())
         }
         async fn supported_uri_schemes(&self) -> zbus::fdo::Result<Vec<String>> {
             Ok(vec![])
@@ -240,11 +240,11 @@ mod linux {
         state
             .player
             .current_entry_id
-            .and_then(|id| TrackId::try_from(format!("/com/customspotify/track/{id}")).ok())
+            .and_then(|id| TrackId::try_from(format!("/com/scytify/track/{id}")).ok())
             .or_else(|| {
                 let track = state.player.current.as_ref()?;
                 TrackId::try_from(format!(
-                    "/com/customspotify/connect/{}_{}",
+                    "/com/scytify/connect/{}_{}",
                     track.id.0, state.player.queue_revision
                 ))
                 .ok()
@@ -287,7 +287,7 @@ mod linux {
             events,
             state: state.clone(),
         };
-        let server = match Server::new("com.customspotify.CustomSpotify", adapter).await {
+        let server = match Server::new("com.scytify.Scytify", adapter).await {
             Ok(s) => s,
             Err(e) => {
                 return Err(error(format!("MPRIS registration failed: {e}")));

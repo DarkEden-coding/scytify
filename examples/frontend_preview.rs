@@ -1,5 +1,5 @@
 //! Offline, synthetic UI fixture. Never starts production services or reads account data.
-use custom_spotify::{backend, contracts::*, domain::*, frontend};
+use scytify::{backend, contracts::*, domain::*, frontend};
 
 /// Bound fixture collections using the same page contract as production.
 fn page<T: Clone>(items: &[T], request: PageRequest) -> Page<T> {
@@ -437,7 +437,7 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
         devices: vec![
             PlaybackDevice {
                 id: Some("preview-local".into()),
-                name: "Custom Spotify (Preview)".into(),
+                name: "Scytify (Preview)".into(),
                 device_type: DeviceType::Computer,
                 is_active: !remote,
                 is_this_app: true,
@@ -479,11 +479,9 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
     };
     if std::env::var("CS_PREVIEW_NO_CONNECT").as_deref() == Ok("1") {
         state.connect.devices.retain(|device| !device.is_this_app);
-        state.connect.ensure_local_device(
-            "custom-spotify:local-player",
-            "Custom Spotify (Preview)".into(),
-            0.65,
-        );
+        state
+            .connect
+            .ensure_local_device("scytify:local-player", "Scytify (Preview)".into(), 0.65);
         if !remote {
             state.connect.active_device_id = state.connect.this_device_id.clone();
             for device in &mut state.connect.devices {
@@ -718,7 +716,7 @@ fn preview_route(route: &str) -> Result<(), Box<dyn std::error::Error>> {
         "devices": std::env::var("CS_PREVIEW_DEVICES").as_deref() == Ok("1"),
         "artwork": (!artwork.is_empty()).then_some(artwork),
     });
-    let dirs = directories::ProjectDirs::from("", "CustomSpotify", "CustomSpotify")
+    let dirs = directories::ProjectDirs::from("", "Scytify", "Scytify")
         .ok_or("No preview config directory")?;
     std::fs::create_dir_all(dirs.config_dir())?;
     std::fs::write(

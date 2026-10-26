@@ -9,7 +9,9 @@ const WEB_API_ENTRY: &str = "spotify-oauth";
 pub(super) const PLAYBACK_ENTRY: &str = "spotify-librespot-oauth";
 const AUTH_ENTRIES: [&str; 2] = [WEB_API_ENTRY, PLAYBACK_ENTRY];
 
-const SERVICE: &str = "dev.customspotify.CustomSpotify";
+const SERVICE: &str = "dev.scytify.Scytify";
+/// Keychain service used before the app was renamed; read once to migrate credentials.
+const LEGACY_SERVICE: &str = "dev.customspotify.CustomSpotify";
 const REDIRECT_PORT: u16 = 43817;
 /// The redirect users register in their developer app; it must match the port above.
 pub const REDIRECT_URI: &str = "http://127.0.0.1:43817/callback";
@@ -41,13 +43,17 @@ impl Vault {
     ) -> Result<Option<T>, String> {
         secret_service(|| {
             let e = Entry::new(SERVICE, name).map_err(safe_keyring)?;
-            match e.get_password() {
-                Ok(v) => serde_json::from_str(&v)
-                    .map(Some)
-                    .map_err(|_| "credential record is corrupt".into()),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(safe_keyring(e)),
-            }
+            let raw = match e.get_password() {
+                Ok(v) => v,
+                Err(keyring::Error::NoEntry) => match migrate_legacy_entry(&e, name)? {
+                    Some(v) => v,
+                    None => return Ok(None),
+                },
+                Err(e) => return Err(safe_keyring(e)),
+            };
+            serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|_| "credential record is corrupt".into())
         })
     }
     pub(super) fn store_entry<T: Serialize>(name: &str, value: &T) -> Result<(), String> {
@@ -80,6 +86,21 @@ impl Vault {
             })
         })
     }
+}
+
+/// Copies a credential saved under the app's former keychain service into `entry`, then
+/// removes the old one. Returns the record, or `None` if there was nothing to migrate.
+fn migrate_legacy_entry(entry: &Entry, name: &str) -> Result<Option<String>, String> {
+    let legacy = Entry::new(LEGACY_SERVICE, name).map_err(safe_keyring)?;
+    let raw = match legacy.get_password() {
+        Ok(v) => v,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(e) => return Err(safe_keyring(e)),
+    };
+    entry.set_password(&raw).map_err(safe_keyring)?;
+    // The copy succeeded; a failed cleanup only leaves an unused old item behind.
+    let _ = legacy.delete_credential();
+    Ok(Some(raw))
 }
 
 fn clear_entries(mut delete: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {

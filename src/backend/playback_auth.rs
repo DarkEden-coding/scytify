@@ -54,7 +54,7 @@ fn select(stored: bool, refresh: bool) -> Selection {
 fn client() -> Result<librespot_oauth::OAuthClient, String> {
     OAuthClientBuilder::new(CLIENT_ID, REDIRECT, SCOPES.to_vec())
         .open_in_browser()
-        .with_custom_message("Playback authorization complete. Return to Custom Spotify.")
+        .with_custom_message("Playback authorization complete. Return to Scytify.")
         .build()
         .map_err(|_| "could not create playback authorization client".into())
 }

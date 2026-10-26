@@ -1,11 +1,12 @@
 //! Process startup and shutdown; playback and window state belong to their respective modules.
-use custom_spotify::{backend, contracts, desktop, frontend};
 use iced::futures::FutureExt;
+use scytify::{backend, contracts, desktop, frontend, migrate};
 use std::{panic::AssertUnwindSafe, time::Duration};
 
 /// Run the native window on the main thread and services on a small asynchronous runtime.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("off")).init();
+    migrate::run();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
