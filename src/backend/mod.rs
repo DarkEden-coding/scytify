@@ -19,7 +19,7 @@ pub use auth::REDIRECT_URI;
 pub fn initial_state() -> AppState {
     AppState {
         settings: storage::default_settings(),
-        auth: AuthState::NeedsClientId,
+        auth: AuthState::Restoring,
         player: PlayerState {
             status: PlaybackStatus::Stopped,
             current: None,

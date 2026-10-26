@@ -124,11 +124,17 @@ pub struct PlayerState {
 
 #[derive(Clone, Debug)]
 pub enum AuthState {
+    /// Startup: settings and saved credentials are still being loaded and checked.
+    Restoring,
     NeedsClientId,
     SignedOut,
     Authorizing,
-    Ready { user_id: String },
-    Blocked { reason: String },
+    Ready {
+        user_id: String,
+    },
+    Blocked {
+        reason: String,
+    },
 }
 
 /// Playback consent is separate from the user's developer Web API authorization.

@@ -1122,7 +1122,7 @@ impl Ui {
                         // Requests sent while startup sign-in is still running are retried
                         // once the backend reports Ready, so their failure isn't news.
                         let early: bool = e.kind == ErrorKind::Authentication
-                            && matches!(self.state.auth, AuthState::Authorizing);
+                            && matches!(self.state.auth, AuthState::Restoring);
                         if self.pending == Some(id) && !early {
                             self.page_error = Some(e.message.clone());
                         }

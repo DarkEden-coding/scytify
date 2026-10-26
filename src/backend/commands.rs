@@ -243,7 +243,7 @@ pub(super) fn handle_command(
             None
         }
         Action::BeginLogin => {
-            if matches!(state.auth, AuthState::Authorizing) {
+            if matches!(state.auth, AuthState::Authorizing | AuthState::Restoring) {
                 return Some(Err(safe(
                     ErrorKind::Unavailable,
                     "authorization is already in progress",

@@ -56,6 +56,7 @@ impl Ui {
         let p: &Palette = &self.palette;
         let account: String = match &self.state.auth {
             AuthState::Ready { user_id } => format!("Signed in as {user_id}"),
+            AuthState::Restoring => "Signing in…".into(),
             AuthState::Authorizing => "Waiting for authorization in your browser".into(),
             AuthState::Blocked { reason } => reason.clone(),
             AuthState::NeedsClientId => "Add a Client ID below to connect".into(),

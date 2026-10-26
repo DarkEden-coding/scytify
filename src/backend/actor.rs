@@ -103,7 +103,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     state.auth = if settings.client_id.is_none() {
         AuthState::NeedsClientId
     } else if tokens.is_some() {
-        AuthState::Authorizing
+        AuthState::Restoring
     } else {
         AuthState::SignedOut
     };

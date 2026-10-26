@@ -8,13 +8,16 @@ use crate::frontend::layout::{
     HERO_HEIGHT, SECTION_HEADING,
 };
 use iced::widget::column;
-use iced::widget::{hover, scrollable, sensor};
+use iced::widget::{hover, image, scrollable, sensor};
 
 impl Ui {
     /// The current page, inside the measured main scroll area.
     pub(super) fn browser_view(&self) -> Element<'_> {
-        if !matches!(self.state.auth, AuthState::Ready { .. }) {
-            return self.scroll_page(self.onboarding());
+        match self.state.auth {
+            AuthState::Ready { .. } => {}
+            // A backend that failed to start never finishes restoring.
+            AuthState::Restoring if !self.disconnected => return self.startup_loading(),
+            _ => return self.scroll_page(self.onboarding()),
         }
         let Some(data) = &self.data else {
             if matches!(&self.query, Query::Search { text } if text.trim().is_empty()) {
@@ -561,6 +564,22 @@ impl Ui {
                 (smallest, self.fit_bold(title, available, smallest))
             }
         }
+    }
+
+    /// Shown while saved credentials are checked at startup, so a returning user does not
+    /// see the sign-in prompt flash before their library appears.
+    fn startup_loading(&self) -> Element<'_> {
+        let p: &Palette = &self.palette;
+        container(
+            column![
+                image(self.app_icon.clone()).width(64).height(64),
+                self.subdued("Loading your library…"),
+            ]
+            .spacing(p.shape.spacing * 2.0)
+            .align_x(Alignment::Center),
+        )
+        .center(Length::Fill)
+        .into()
     }
 
     /// Account prerequisites shown instead of library content until sign-in completes.
