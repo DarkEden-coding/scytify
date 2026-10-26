@@ -71,8 +71,17 @@ cat >"$staged/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-# Ad-hoc sign the whole bundle so its signature covers Info.plist and resources.
-codesign --force --sign - "$staged" >/dev/null 2>&1
+# Sign the whole bundle so its signature covers Info.plist and resources. Keychain "Always
+# Allow" trusts an ad-hoc signature only for that exact build, so every reinstall would ask
+# again for each stored token; a certificate identity keeps that trust across rebuilds.
+# CODESIGN_IDENTITY overrides the first Apple Development identity found.
+identity=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning |
+    sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*"$/\1/p' | head -n1)}
+if [ -z "$identity" ]; then
+    echo "No Apple Development signing identity; ad-hoc signing. Keychain will ask again after each install."
+    identity=-
+fi
+codesign --force --sign "$identity" "$staged"
 
 mkdir -p "$HOME/Applications"
 rm -rf "$app"
