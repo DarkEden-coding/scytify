@@ -218,15 +218,8 @@ impl Playback {
     pub(crate) fn update(&self, event: PlayerEvent) -> Option<(Update, Instant)> {
         let observed_at = self.event_clock.pop();
         let mut gate = self.event_gate.lock().unwrap();
-        if self.connect.is_some()
-            && let PlayerEvent::Loading {
-                play_request_id,
-                track_id,
-                ..
-            } = &event
-            && gate.request_id == Some(*play_request_id)
-        {
-            gate.expected_track = track_id.to_id().ok().map(crate::domain::SpotifyId);
+        if self.connect.is_some() {
+            gate.follow_spirc(&event);
         }
         let update = gate.update(event);
         match update {
@@ -475,6 +468,24 @@ impl EventGate {
         self.terminal_armed = false;
         self.terminal_seen = false;
         self.seek = None;
+    }
+    /// Spirc picks tracks itself, so the gate learns each one from the decoder's first
+    /// report of the current request. A track Spirc preloaded (the gapless next track at a
+    /// natural end) starts without `Loading`: its `TrackChanged` comes first, and only the
+    /// current request can emit one, since a new load drops the previous one's loader.
+    fn follow_spirc(&mut self, event: &PlayerEvent) {
+        let track = match event {
+            PlayerEvent::Loading {
+                play_request_id,
+                track_id,
+                ..
+            } if self.request_id == Some(*play_request_id) => track_id,
+            PlayerEvent::TrackChanged { audio_item } if self.request_id.is_some() => {
+                &audio_item.track_id
+            }
+            _ => return,
+        };
+        self.expected_track = track.to_id().ok().map(crate::domain::SpotifyId);
     }
     fn seek_started(&mut self, target: u64) {
         self.terminal_armed = false;
@@ -725,6 +736,95 @@ mod event_tests {
             .is_none()
         );
     }
+    /// Regression: at a natural end Spirc loads the next track it preloaded, which starts
+    /// without a `Loading` event. The gate must still follow it, or the player keeps
+    /// showing the finished track stuck at its end while the next one plays.
+    #[test]
+    fn spirc_follows_a_preloaded_next_track_that_starts_without_loading() {
+        use librespot_metadata::audio::{AudioFiles, AudioItem, UniqueFields};
+        let (a, au) = track("4uLU6hMCjMI75M1A2tKUQC");
+        let (b, bu) = track("0VjIjW4GlUZAMYd2vXMi3b");
+        let mut gate = EventGate::default();
+        let feed = |gate: &mut EventGate, event: PlayerEvent| {
+            gate.follow_spirc(&event);
+            gate.update(event)
+        };
+        feed(
+            &mut gate,
+            PlayerEvent::PlayRequestIdChanged { play_request_id: 1 },
+        );
+        feed(
+            &mut gate,
+            PlayerEvent::Loading {
+                play_request_id: 1,
+                track_id: au.clone(),
+                position_ms: 0,
+            },
+        );
+        assert_eq!(gate.expected_track, Some(a));
+        assert!(matches!(
+            feed(
+                &mut gate,
+                PlayerEvent::EndOfTrack {
+                    play_request_id: 1,
+                    track_id: au
+                }
+            ),
+            Some(Update::End)
+        ));
+        feed(
+            &mut gate,
+            PlayerEvent::PlayRequestIdChanged { play_request_id: 2 },
+        );
+        let audio_item = Box::new(AudioItem {
+            track_id: bu.clone(),
+            uri: bu.to_uri().unwrap(),
+            files: AudioFiles::default(),
+            name: "Next".into(),
+            covers: vec![],
+            language: vec![],
+            duration_ms: 135_000,
+            is_explicit: false,
+            availability: Ok(()),
+            alternatives: None,
+            unique_fields: UniqueFields::Track {
+                artists: Default::default(),
+                album: String::new(),
+                album_artists: vec![],
+                popularity: 0,
+                number: 1,
+                disc_number: 1,
+            },
+        });
+        let Some(Update::Track(next)) = feed(&mut gate, PlayerEvent::TrackChanged { audio_item })
+        else {
+            panic!("the preloaded track must replace the finished one");
+        };
+        assert_eq!(next.id, b);
+        assert!(matches!(
+            feed(
+                &mut gate,
+                PlayerEvent::Playing {
+                    play_request_id: 2,
+                    track_id: bu.clone(),
+                    position_ms: 0
+                }
+            ),
+            Some(Update::Playing(0))
+        ));
+        assert!(matches!(
+            feed(
+                &mut gate,
+                PlayerEvent::PositionChanged {
+                    play_request_id: 2,
+                    track_id: bu,
+                    position_ms: 1000
+                }
+            ),
+            Some(Update::Position(1000))
+        ));
+    }
+
     #[test]
     fn terminal_is_suppressed_until_seek_acknowledgement() {
         let (a, au) = track("4uLU6hMCjMI75M1A2tKUQC");

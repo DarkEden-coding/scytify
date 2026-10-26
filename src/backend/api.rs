@@ -2,8 +2,8 @@ use futures_util::{StreamExt, TryStreamExt};
 
 use crate::{
     contracts::{
-        AppError, ErrorKind, Page, PageData, PageRequest, PlaySource, Query, SEARCH_LIMIT,
-        SearchResults,
+        AppError, ErrorKind, LibraryItem, Page, PageData, PageRequest, PlaySource, Query,
+        SEARCH_LIMIT, SearchResults,
     },
     domain::*,
 };
@@ -12,6 +12,10 @@ use crate::{
 const LIKED_SONGS_SOURCE: &str = "liked-songs";
 /// Items per source membership page, the Web API maximum.
 const SOURCE_PAGE: u64 = 50;
+/// Artist discography requests accept at most 10 albums in development mode.
+const ARTIST_ALBUMS_PAGE: u16 = 10;
+/// URIs per library contains request, the Web API maximum.
+const LIBRARY_CHECK_PAGE: usize = 40;
 /// Source membership pages requested at once.
 const SOURCE_PAGE_CONCURRENCY: usize = 6;
 
@@ -19,6 +23,7 @@ const SOURCE_PAGE_CONCURRENCY: usize = 6;
 #[derive(Clone)]
 pub(crate) struct Api {
     pub(super) http: reqwest::Client,
+    catalog_base_url: String,
     pub(super) control_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub(super) playback_backoff: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
@@ -41,6 +46,7 @@ impl Api {
             .map_err(|_| err(ErrorKind::Internal, "HTTP client unavailable"))?;
         Ok(Self {
             http,
+            catalog_base_url: "https://api.spotify.com/v1".into(),
             control_lock: Default::default(),
             playback_backoff: Default::default(),
         })
@@ -286,6 +292,74 @@ impl Api {
             .collect())
     }
 
+    /// Saves an item to Your Library or removes it, through the URI-based library
+    /// endpoint that replaced the per-type ones (`me/tracks`, `playlists/{id}/followers`).
+    pub(crate) async fn set_saved(
+        &self,
+        token: &str,
+        item: &LibraryItem,
+        saved: bool,
+    ) -> Result<(), AppError> {
+        let method = if saved {
+            reqwest::Method::PUT
+        } else {
+            reqwest::Method::DELETE
+        };
+        let mut url = url::Url::parse(&format!("{}/me/library", self.catalog_base_url))
+            .map_err(|_| err(ErrorKind::Internal, "invalid library endpoint"))?;
+        url.query_pairs_mut()
+            .append_pair("uris", &library_uri(item)?);
+        let r = self
+            .http
+            .request(method, url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| err(ErrorKind::Network, "Spotify is unreachable"))?;
+        // Success has an empty body, which is not JSON.
+        if r.status().is_success() {
+            return Ok(());
+        }
+        response_json(r).await.map(drop).map_err(library_scope)
+    }
+
+    /// Whether each item is in Your Library, in request order. The endpoint takes at most
+    /// `LIBRARY_CHECK_PAGE` URIs, so longer lists are asked about in concurrent chunks.
+    pub(crate) async fn check_saved(
+        &self,
+        token: &str,
+        items: &[LibraryItem],
+    ) -> Result<Vec<bool>, AppError> {
+        let paths = items
+            .chunks(LIBRARY_CHECK_PAGE)
+            .map(|chunk| {
+                let uris = chunk
+                    .iter()
+                    .map(library_uri)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(format!("me/library/contains?uris={}", uris.join(",")))
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        let pages: Vec<serde_json::Value> = futures_util::stream::iter(paths)
+            .map(|path| async move { self.get_json(token, &path).await })
+            .buffered(SOURCE_PAGE_CONCURRENCY)
+            .try_collect()
+            .await
+            .map_err(library_scope)?;
+        let saved: Vec<bool> = pages
+            .iter()
+            .flat_map(|page| page.as_array().into_iter().flatten())
+            .map(|flag| flag.as_bool().unwrap_or(false))
+            .collect();
+        if saved.len() != items.len() {
+            return Err(err(
+                ErrorKind::Network,
+                "Spotify returned invalid library data",
+            ));
+        }
+        Ok(saved)
+    }
+
     /// Current playlist revision, compared before and after gathering its membership.
     async fn playlist_snapshot(&self, token: &str, id: &SpotifyId) -> Result<String, AppError> {
         let v = self
@@ -338,7 +412,7 @@ impl Api {
     async fn get_json(&self, token: &str, path: &str) -> Result<serde_json::Value, AppError> {
         let r = self
             .http
-            .get(format!("https://api.spotify.com/v1/{path}"))
+            .get(format!("{}/{path}", self.catalog_base_url))
             .bearer_auth(token)
             .send()
             .await
@@ -347,9 +421,9 @@ impl Api {
     }
 
     /// Fetches one contract page from official Spotify v1 endpoints. Spotify serves at
-    /// most 50 items per request, and 10 per search type in development mode, so a larger
-    /// page is fetched as concurrent upstream pages and joined: the frontend relies on a
-    /// page covering its whole requested range to put it in front of the loaded run.
+    /// most 50 items per request, and 10 for artist albums and search in development mode.
+    /// Larger pages are fetched concurrently and joined: the frontend relies on a page
+    /// covering its whole requested range to put it in front of the loaded run.
     pub(crate) async fn fetch(
         &self,
         token: &str,
@@ -360,11 +434,7 @@ impl Api {
         if p.limit == 0 || p.limit > crate::contracts::MAX_PAGE_SIZE {
             return Err(err(ErrorKind::InvalidInput, "invalid page size"));
         }
-        let step: u16 = if search_root(q).is_some() {
-            SEARCH_LIMIT as u16
-        } else {
-            SOURCE_PAGE as u16
-        };
+        let step = upstream_page_size(q);
         let chunks = (0..p.limit)
             .step_by(usize::from(step))
             .map(|start| PageRequest {
@@ -401,7 +471,7 @@ impl Api {
         q: &Query,
         p: PageRequest,
     ) -> Result<PageData, AppError> {
-        let page_limit = p.limit.min(SOURCE_PAGE as u16);
+        let page_limit = p.limit.min(upstream_page_size(q));
         let search_limit = p.limit.min(SEARCH_LIMIT as u16);
         let (path, kind, limit) = match q {
             Query::OwnPlaylists => ("me/playlists".into(), Kind::Playlists, page_limit),
@@ -548,6 +618,15 @@ fn search_root(q: &Query) -> Option<&'static str> {
     }
 }
 
+/// Use the same endpoint limit for chunk offsets and the outgoing request size.
+fn upstream_page_size(q: &Query) -> u16 {
+    match q {
+        Query::ArtistAlbums { .. } => ARTIST_ALBUMS_PAGE,
+        _ if search_root(q).is_some() => SEARCH_LIMIT as u16,
+        _ => SOURCE_PAGE as u16,
+    }
+}
+
 /// Builds a search path for nonempty text and comma-separated Spotify types.
 fn search_path(text: &str, types: &str) -> Result<String, AppError> {
     if text.trim().is_empty() {
@@ -617,10 +696,12 @@ fn map_page(
     }
     let items = raw.iter().map(|x| unwrap_item(x, kind));
     Ok(match kind {
+        // Development mode only lists the items of the user's own playlists. Followed
+        // Spotify playlists stay too: the playback session reads those.
         Kind::Playlists => PageData::Playlists(page!(
             items
                 .filter_map(parse_playlist)
-                .filter(|x| x.owner_id == user)
+                .filter(|x| x.owner_id == user || super::discover::is_spotify_owned(&x.id))
                 .collect()
         )),
         // Skipped rows (local files, episodes) keep their raw position on the survivors.
@@ -658,12 +739,22 @@ fn parse_search(v: &serde_json::Value) -> SearchResults {
     }
 }
 
-/// Library reads fail with 403 when a token predates the `user-library-read` scope.
+/// Spotify URI of a library item, from a validated ID.
+fn library_uri(item: &LibraryItem) -> Result<String, AppError> {
+    Ok(match item {
+        LibraryItem::Track(id) => format!("spotify:track:{}", valid_id(id)?),
+        LibraryItem::Album(id) => format!("spotify:album:{}", valid_id(id)?),
+        LibraryItem::Playlist(id) => format!("spotify:playlist:{}", valid_id(id)?),
+    })
+}
+
+/// Library calls fail with 403 when a token predates the `user-library-read` or
+/// `user-library-modify` scope.
 fn library_scope(e: AppError) -> AppError {
     if e.kind == ErrorKind::Permission {
         err(
             ErrorKind::Permission,
-            "Liked Songs and saved albums need new Spotify permission; sign out and sign in again",
+            "Your Library needs new Spotify permission; sign out and sign in again",
         )
     } else {
         e
@@ -791,6 +882,192 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Exercise the real HTTP fetch and page assembly against the endpoint's 10-item cap.
+    #[tokio::test]
+    async fn artist_albums_load_contiguous_pages_with_the_endpoint_limit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut api = Api::new().unwrap();
+        api.catalog_base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        api.http = super::super::http_client()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let read = socket.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                if request.is_empty() {
+                    continue;
+                }
+                let request = String::from_utf8(request).unwrap();
+                let path = request.split_whitespace().nth(1).unwrap();
+                let url = url::Url::parse(&format!("http://localhost{path}")).unwrap();
+                assert_eq!(url.path(), "/v1/artists/0123456789012345678901/albums");
+                let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+                let offset: u64 = params["offset"].parse().unwrap();
+                let limit: u64 = params["limit"].parse().unwrap();
+                let (status, body) = if (1..=10).contains(&limit) {
+                    let end = (offset + limit).min(75);
+                    let items: Vec<_> = (offset..end)
+                        .map(|i| json!({"id": format!("album{i}"), "name": format!("Album {i}")}))
+                        .collect();
+                    (
+                        "200 OK",
+                        json!({
+                            "items": items, "total": 75,
+                            "next": (end < 75).then_some("next page")
+                        }),
+                    )
+                } else {
+                    ("400 Bad Request", json!({"error": "limit exceeds 10"}))
+                };
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                // Concurrent speculative pages can be cancelled after the final page.
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let query = Query::ArtistAlbums {
+            artist_id: SpotifyId("0123456789012345678901".into()),
+        };
+        for (offset, limit, end) in [(0, 100, 75), (20, 53, 73), (70, 100, 75)] {
+            let result = api
+                .fetch("test-token", "me", &query, PageRequest { offset, limit })
+                .await;
+            let PageData::Albums(page) = result.unwrap() else {
+                panic!("expected artist albums");
+            };
+            assert_eq!(page.offset, offset);
+            assert_eq!(page.next_offset, end);
+            assert_eq!(page.total, Some(75));
+            assert_eq!(page.has_more, end < 75);
+            let ids: Vec<_> = page.items.iter().map(|album| album.id.0.clone()).collect();
+            assert_eq!(
+                ids,
+                (offset..end)
+                    .map(|i| format!("album{i}"))
+                    .collect::<Vec<_>>()
+            );
+        }
+        server.abort();
+    }
+
+    /// Saving and checking go through the URI-based `me/library` endpoints, and checks
+    /// longer than the endpoint's 40-URI cap are split and joined in order.
+    #[tokio::test]
+    async fn library_saves_by_uri_and_checks_in_chunks_of_forty() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut api = Api::new().unwrap();
+        api.catalog_base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        api.http = super::super::http_client()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let read = socket.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let mut words = request.split_whitespace();
+                let method = words.next().unwrap_or_default().to_owned();
+                let url =
+                    url::Url::parse(&format!("http://localhost{}", words.next().unwrap())).unwrap();
+                let uris: Vec<String> = url
+                    .query_pairs()
+                    .find(|(key, _)| key == "uris")
+                    .map(|(_, value)| value.split(',').map(str::to_owned).collect())
+                    .unwrap_or_default();
+                // Odd-numbered tracks are saved.
+                let body = if url.path() == "/v1/me/library/contains" && uris.len() <= 40 {
+                    let flags: Vec<bool> = uris
+                        .iter()
+                        .map(|uri| uri.ends_with(['1', '3', '5', '7', '9']))
+                        .collect();
+                    json!(flags).to_string()
+                } else {
+                    String::new()
+                };
+                let status = if url.path().starts_with("/v1/me/library") {
+                    "200 OK"
+                } else {
+                    "404 Not Found"
+                };
+                seen.lock()
+                    .unwrap()
+                    .push((method, url.path().to_owned(), uris));
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let track = |i: usize| LibraryItem::Track(SpotifyId(format!("track{i:017}")));
+        let items: Vec<LibraryItem> = (0..50).map(track).collect();
+        let saved = api.check_saved("test-token", &items).await.unwrap();
+        assert_eq!(saved, (0..50).map(|i| i % 2 == 1).collect::<Vec<_>>());
+        let album = LibraryItem::Album(SpotifyId("0123456789012345678901".into()));
+        api.set_saved("test-token", &album, true).await.unwrap();
+        api.set_saved("test-token", &track(3), false).await.unwrap();
+        server.abort();
+
+        let requests = requests.lock().unwrap();
+        let mut checks: Vec<usize> = requests
+            .iter()
+            .filter(|(method, path, _)| method == "GET" && path == "/v1/me/library/contains")
+            .map(|(_, _, uris)| uris.len())
+            .collect();
+        checks.sort();
+        assert_eq!(checks, [10, 40]);
+        let writes: Vec<_> = requests
+            .iter()
+            .filter(|(method, ..)| method != "GET")
+            .cloned()
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                (
+                    "PUT".to_owned(),
+                    "/v1/me/library".to_owned(),
+                    vec!["spotify:album:0123456789012345678901".to_owned()]
+                ),
+                (
+                    "DELETE".to_owned(),
+                    "/v1/me/library".to_owned(),
+                    vec!["spotify:track:track00000000000000003".to_owned()]
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn card_image_prefers_smallest_at_least_160px() {
         let images = json!([
@@ -897,6 +1174,14 @@ mod tests {
             panic!("expected playlists")
         };
         assert_eq!((p.items.len(), p.next_offset), (1, 53));
+        // A followed Spotify playlist is readable over the playback session, so it stays.
+        let followed = json!({"items": [
+            {"id": "37i9dQZF1E37fa3zdWtvQY", "name": "Daily Mix", "owner": {"id": "spotify"}, "snapshot_id": "s"}
+        ]});
+        let PageData::Playlists(p) = map_page(Kind::Playlists, followed, 0, "me").unwrap() else {
+            panic!("expected playlists")
+        };
+        assert_eq!(p.items.len(), 1);
         let locals = json!({"items": [
             {"track": {"id": "l1", "name": "Local", "is_local": true}},
             {"track": {"id": "l2", "name": "Local", "is_local": true}}

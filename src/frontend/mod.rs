@@ -5,6 +5,7 @@ mod devices;
 mod executor;
 mod icons;
 mod layout;
+mod library;
 mod lyrics;
 mod measure;
 mod navigation;
@@ -71,6 +72,7 @@ enum Message {
     /// Sidebar "Search": open the search page for the current text and focus the field.
     OpenSearch,
     Navigate(Route),
+    RetryPage,
     Back,
     Forward,
     /// Main view scroll offset and viewport height.
@@ -97,6 +99,8 @@ enum Message {
     QueueMore,
     /// Play a source starting at a known track, shown in the player before Spotify confirms it.
     PlayTrack(PlaySource, Box<Track>),
+    /// Like or unlike a song, or save or remove an album or playlist.
+    ToggleSaved(library::Entry),
     /// Scrollable moved: report to the glide, then handle as the area's own scroll message.
     Scrolled(smooth_scroll::Area, smooth_scroll::Metrics),
     /// Mouse wheel ticks (in pixels) over a scroll area.
@@ -211,8 +215,12 @@ struct Ui {
     mixes_failed: Option<String>,
     /// Liked Songs total, known once its page has loaded, for the sidebar subtitle.
     liked_count: Option<u64>,
+    /// Which shown songs are liked and which albums and playlists are saved.
+    library: library::Library,
     history: History,
     data: Option<PageData>,
+    /// A failed main-page load stays visible after its notice expires.
+    page_error: Option<String>,
     offset: u64,
     scroll: f32,
     /// Measured size of the main scroll area; estimated until the first layout.
@@ -358,8 +366,10 @@ impl Ui {
             mixes_pending: None,
             mixes_failed: None,
             liked_count: None,
+            library: Default::default(),
             history: History::default(),
             data: None,
+            page_error: None,
             offset: 0,
             scroll: 0.0,
             main_size: iced::Size::ZERO,
@@ -487,6 +497,8 @@ impl Ui {
         self.requests.clear();
         self.generation += 1;
         self.data = None;
+        self.page_error = None;
+        self.library.retry_failed();
         self.scroll = 0.0;
         self.reset_scroll = true;
         self.hovered_row = None;
@@ -671,6 +683,7 @@ impl Ui {
         self.mixes = None;
         self.mixes_failed = None;
         self.liked_count = None;
+        self.library.clear();
         self.sidebar_pending = None;
         self.sidebar_more = None;
         self.queue_pending = None;
@@ -679,6 +692,7 @@ impl Ui {
         self.generation += 1;
         self.search_generation += 1;
         self.data = None;
+        self.page_error = None;
         self.sidebar_data = None;
         self.queue_data = None;
         self.artwork = Default::default();
@@ -870,6 +884,7 @@ impl Ui {
         self.ensure_shelf();
         self.ensure_mixes();
         self.fetch_artwork();
+        self.check_library();
         if self.notice.is_empty() {
             self.notice_shown = None;
         } else if self
@@ -1061,6 +1076,9 @@ impl Ui {
                     self.follow_lyrics();
                     return Task::none();
                 }
+                if self.complete_library(id, &result) {
+                    return Task::none();
+                }
                 let quiet: bool = self.quiet.remove(&id);
                 if result.is_err()
                     && let Some(pending) =
@@ -1081,6 +1099,9 @@ impl Ui {
                         // once the backend reports Ready, so their failure isn't news.
                         let early: bool = e.kind == ErrorKind::Authentication
                             && matches!(self.state.auth, AuthState::Authorizing);
+                        if self.pending == Some(id) && !early {
+                            self.page_error = Some(e.message.clone());
+                        }
                         if self.shelf_pending == Some(id) && !early {
                             self.shelf_failed = true;
                         }
@@ -1246,6 +1267,8 @@ impl Ui {
                 return iced::widget::operation::focus(iced::widget::Id::new(SEARCH_INPUT));
             }
             Message::Navigate(route) => self.navigate(route),
+            Message::ToggleSaved(entry) => self.toggle_saved(entry),
+            Message::RetryPage => self.fetch(),
             Message::Back => {
                 if let Some(route) = self.history.back(self.route()) {
                     self.go(route);
@@ -1488,7 +1511,13 @@ impl Ui {
         } else if self.shelf_pending == Some(id) {
             self.shelf_pending = None;
             match data {
-                PageData::Albums(page) => self.shelf = Some(page),
+                PageData::Albums(page) => {
+                    self.library.mark(
+                        page.items.iter().map(|a| LibraryItem::Album(a.id.clone())),
+                        true,
+                    );
+                    self.shelf = Some(page);
+                }
                 _ => self.shelf_failed = true,
             }
         } else if self.sidebar_pending == Some(id) {
@@ -1519,8 +1548,19 @@ impl Ui {
             {
                 return;
             }
-            if let (Query::LikedTracks, PageData::Tracks(page)) = (&self.query, &data) {
-                self.liked_count = page.total.or(self.liked_count);
+            match (&self.query, &data) {
+                (Query::LikedTracks, PageData::Tracks(page)) => {
+                    self.liked_count = page.total.or(self.liked_count);
+                    self.library.mark(
+                        page.items.iter().map(|t| LibraryItem::Track(t.id.clone())),
+                        true,
+                    );
+                }
+                (Query::SavedAlbums, PageData::Albums(page)) => self.library.mark(
+                    page.items.iter().map(|a| LibraryItem::Album(a.id.clone())),
+                    true,
+                ),
+                _ => {}
             }
             if let Some((more, fill)) = self.more_pending
                 && more == id
@@ -1916,6 +1956,7 @@ fn is_background(action: &Action) -> bool {
         action,
         Action::Artwork { .. }
             | Action::Fetch { .. }
+            | Action::CheckSaved(_)
             | Action::CancelRequest(_)
             | Action::SetVisible(_)
     )
@@ -2388,6 +2429,56 @@ mod channel_tests {
 #[cfg(test)]
 mod browsing_tests {
     use super::*;
+    #[test]
+    fn artist_load_failure_stays_visible_and_can_be_retried() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        ui.search = "keys".into();
+        let _ = ui.update(Message::SearchNow);
+        let search = ui.route();
+        while back.commands.try_recv().is_ok() {}
+        let artist = Route::artist(&Artist {
+            id: SpotifyId("artist".into()),
+            name: "Keys".into(),
+            artwork_url: None,
+        });
+        let _ = ui.update(Message::Navigate(artist.clone()));
+        let failed = ui.pending.unwrap();
+        let _ = ui.update(Message::Backend(Event::Completed {
+            id: failed,
+            result: Err(AppError {
+                kind: ErrorKind::Network,
+                message: "Spotify API request failed".into(),
+                retry_after_seconds: None,
+            }),
+        }));
+        let _ = ui.update(Message::DismissNotice);
+        assert_eq!(ui.page_error.as_deref(), Some("Spotify API request failed"));
+        assert!(ui.data.is_none() && ui.pending.is_none());
+
+        while back.commands.try_recv().is_ok() {}
+        let _ = ui.update(Message::RetryPage);
+        let retry = back.commands.try_recv().unwrap();
+        assert!(matches!(retry.action, Action::Fetch { ref query, .. } if *query == artist.query));
+        assert_eq!(ui.pending, Some(retry.id));
+        assert!(ui.page_error.is_none());
+        complete(
+            &mut ui,
+            retry.id,
+            Response::Page(PageData::Albums(Page {
+                offset: 0,
+                items: vec![],
+                total: Some(0),
+                has_more: false,
+                next_offset: 0,
+            })),
+        );
+        assert!(matches!(ui.data, Some(PageData::Albums(_))));
+        assert_eq!(ui.route(), artist);
+        let _ = ui.update(Message::Back);
+        assert_eq!(ui.route(), search);
+        assert!(ui.page_error.is_none());
+    }
+
     fn artists(offset: u64, len: usize, has_more: bool) -> Response {
         artists_of(offset, len, None, has_more)
     }

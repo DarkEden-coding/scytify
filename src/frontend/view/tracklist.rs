@@ -9,6 +9,8 @@ use iced::widget::{mouse_area, rule};
 /// Fixed table cells; the title and album columns share the remaining width 5:3.
 const INDEX_WIDTH: f32 = 32.0;
 const ACTIONS_WIDTH: f32 = 64.0;
+/// The like toggle: a 16px heart in a 6px-padded button.
+pub(super) const LIKE_WIDTH: f32 = 28.0;
 const DURATION_WIDTH: f32 = 56.0;
 const THUMB: f32 = 40.0;
 const CELL_GAP: f32 = 16.0;
@@ -71,6 +73,9 @@ impl Ui {
             )
             .padding(8),
         );
+        if let Some(entry) = self.header_entry() {
+            actions = actions.push(self.save_button(entry));
+        }
         let actions = container(actions)
             .padding([0.0, CONTENT_PADDING])
             .height(ACTIONS_HEIGHT)
@@ -161,8 +166,8 @@ impl Ui {
     /// Albums show no album column or thumbnails, like their printed track list.
     fn columns(&self, album: bool) -> Columns {
         let table: f32 = self.grid_width() - 2.0 * ROW_PADDING;
-        let fixed: f32 = INDEX_WIDTH + ACTIONS_WIDTH + DURATION_WIDTH;
-        let cells: f32 = if album { 4.0 } else { 5.0 };
+        let fixed: f32 = INDEX_WIDTH + ACTIONS_WIDTH + LIKE_WIDTH + DURATION_WIDTH;
+        let cells: f32 = if album { 5.0 } else { 6.0 };
         let flexible: f32 = (table - fixed - CELL_GAP * (cells - 1.0)).max(0.0);
         if album {
             Columns {
@@ -198,11 +203,14 @@ impl Ui {
         } else {
             self.subdued("Time").into()
         };
-        cells = cells.push(space().width(ACTIONS_WIDTH)).push(
-            container(duration)
-                .width(DURATION_WIDTH)
-                .align_x(Alignment::End),
-        );
+        cells = cells
+            .push(space().width(ACTIONS_WIDTH))
+            .push(space().width(LIKE_WIDTH))
+            .push(
+                container(duration)
+                    .width(DURATION_WIDTH)
+                    .align_x(Alignment::End),
+            );
         column![
             container(cells)
                 .padding([0.0, ROW_PADDING])
@@ -297,12 +305,19 @@ impl Ui {
         } else {
             space().into()
         };
+        // Like Spotify, the heart shows on hover, and always once the song is liked.
+        let like: Element<'a> = if hovered || self.is_saved(&LibraryItem::Track(item.id.clone())) {
+            self.like_button(item)
+        } else {
+            space().into()
+        };
         cells = cells
             .push(
                 container(actions)
                     .width(ACTIONS_WIDTH)
                     .align_x(Alignment::End),
             )
+            .push(container(like).width(LIKE_WIDTH).center_x(LIKE_WIDTH))
             .push(
                 self.subdued(clock(item.duration_ms))
                     .width(DURATION_WIDTH)

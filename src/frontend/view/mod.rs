@@ -218,6 +218,76 @@ impl Ui {
             .on_press(message)
     }
 
+    /// Like toggle of a song: an outlined heart, or a filled accent heart while liked.
+    pub(super) fn like_button<'a>(&self, track: &Track) -> Element<'a> {
+        let p: &Palette = &self.palette;
+        let liked: bool = self.is_saved(&LibraryItem::Track(track.id.clone()));
+        let content: Element<'a> = match (p.icons, liked) {
+            (Icons::Lucide, true) => iced::widget::image(self.glyphs.heart.clone())
+                .width(icons::SOLID_HEART)
+                .height(icons::SOLID_HEART)
+                .into(),
+            (Icons::Lucide, false) => icons::icon(Icon::Heart, 16.0).into(),
+            (Icons::Text, _) => self.label(if liked { "Liked" } else { "Like" }).into(),
+        };
+        let tip: &str = if liked {
+            "Remove from Liked Songs"
+        } else {
+            "Add to Liked Songs"
+        };
+        self.tip(
+            button(content)
+                .padding(6)
+                .style(styles::icon_button(p, liked))
+                .on_press(Message::ToggleSaved(library::Entry::Track(track.clone()))),
+            tip,
+        )
+    }
+
+    /// Your Library toggle of an album or playlist page: a plus in a circle, or a check on
+    /// a filled accent circle while saved.
+    pub(super) fn save_button<'a>(&self, entry: library::Entry) -> Element<'a> {
+        const EDGE: f32 = 32.0;
+        let p: &Palette = &self.palette;
+        let saved: bool = self.is_saved(&entry.item());
+        let content: Element<'a> = match (p.icons, saved) {
+            (Icons::Lucide, true) => {
+                container(icons::icon(Icon::Check, EDGE * 0.55).color(p.colors.on_accent))
+                    .center(EDGE * 0.92)
+                    .style(styles::dot(p))
+                    .into()
+            }
+            (Icons::Lucide, false) => icons::icon(Icon::CirclePlus, EDGE).into(),
+            (Icons::Text, _) => {
+                glyph(p, if saved { Icon::Check } else { Icon::CirclePlus }, EDGE).into()
+            }
+        };
+        let tip: &str = if saved {
+            "Remove from Your Library"
+        } else {
+            "Save to Your Library"
+        };
+        self.tip(
+            button(content)
+                .padding(8)
+                .style(styles::icon_button(p, saved))
+                .on_press(Message::ToggleSaved(entry)),
+            tip,
+        )
+    }
+
+    /// Short hint shown above a control while hovered.
+    pub(super) fn tip<'a>(&self, control: impl Into<Element<'a>>, hint: &'a str) -> Element<'a> {
+        iced::widget::tooltip(
+            control,
+            container(self.subdued(hint))
+                .padding([6.0, 10.0])
+                .style(styles::popover(&self.palette)),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into()
+    }
+
     /// Raised secondary button for ordinary actions.
     pub(super) fn control<'a>(
         &self,

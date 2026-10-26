@@ -9,6 +9,8 @@ pub const MAX_PAGE_SIZE: u16 = 100;
 pub const ARTWORK_IN_FLIGHT: usize = 6;
 /// Spotify caps development-mode search pages at 10 results per type.
 pub const SEARCH_LIMIT: usize = 10;
+/// Items one `CheckSaved` request may ask about; the backend splits it into upstream calls.
+pub const MAX_SAVED_CHECK: usize = 120;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RequestId(pub u64);
@@ -91,6 +93,15 @@ pub struct SearchResults {
     pub tracks: Vec<Track>,
 }
 
+/// Something the user can keep in Your Library: a liked song, a saved album or a followed
+/// playlist.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LibraryItem {
+    Track(SpotifyId),
+    Album(SpotifyId),
+    Playlist(SpotifyId),
+}
+
 #[derive(Clone, Debug)]
 pub enum PlaySource {
     /// Offset is the raw occurrence. Spirc loads the context directly; the local fallback
@@ -160,6 +171,14 @@ pub enum Action {
         edge_px: u16,
     },
     SetVisible(bool),
+    /// Add an item to (`saved`) or remove it from Your Library. Needs `user-library-modify`.
+    SetSaved {
+        item: LibraryItem,
+        saved: bool,
+    },
+    /// Whether each item is in Your Library. Answers `Response::Saved` in the same order;
+    /// at most `MAX_SAVED_CHECK` items.
+    CheckSaved(Vec<LibraryItem>),
     /// Synced lyrics for one track. Answers `Response::Lyrics`, cached on disk.
     Lyrics {
         track_id: SpotifyId,
@@ -206,6 +225,8 @@ pub enum Response {
     },
     /// `None` when the provider has no lyrics for the track.
     Lyrics(Option<Lyrics>),
+    /// One flag per item of a `CheckSaved` request.
+    Saved(Vec<bool>),
 }
 
 #[derive(Clone, Debug)]

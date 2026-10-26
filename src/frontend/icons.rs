@@ -40,6 +40,10 @@ pub enum Icon {
     LogOut,
     Power,
     Heart,
+    /// Save to Your Library (Lucide `circle-plus`).
+    CirclePlus,
+    /// Saved in Your Library, drawn on a filled accent circle (Lucide `check`).
+    Check,
     SearchX,
     /// Window minimize (Lucide `minus`).
     Minimize,
@@ -93,6 +97,8 @@ impl Icon {
             Icon::LogOut => '\u{e10e}',
             Icon::Power => '\u{e140}',
             Icon::Heart => '\u{e0f2}',
+            Icon::CirclePlus => '\u{e081}',
+            Icon::Check => '\u{e06c}',
             Icon::SearchX => '\u{e4ad}',
             Icon::Minimize => '\u{e11c}',
             Icon::Maximize => '\u{e167}',
@@ -137,6 +143,8 @@ impl Icon {
             Icon::LogOut => "Sign out",
             Icon::Power => "Quit",
             Icon::Heart => "Liked",
+            Icon::CirclePlus => "Save",
+            Icon::Check => "Saved",
             Icon::SearchX => "No results",
             Icon::Minimize => "Minimize",
             Icon::Maximize => "Maximize",
@@ -181,6 +189,8 @@ pub fn glyph<'a>(palette: &Palette, which: Icon, size: f32) -> Text<'a> {
 pub enum Solid {
     Play,
     Pause,
+    /// The filled heart of a liked song.
+    Heart,
 }
 
 impl Solid {
@@ -196,6 +206,12 @@ impl Solid {
             Solid::Pause => {
                 (0.18..=0.84).contains(&y)
                     && ((0.22..=0.42).contains(&x) || (0.58..=0.78).contains(&x))
+            }
+            // The heart curve (x² + y² − 1)³ = x²y³, which spans 2.28 × 2.25 units,
+            // scaled into the square with the outline heart's margins.
+            Solid::Heart => {
+                let (hx, hy) = ((x - 0.5) * 2.5, 1.25 - (y - 0.06) * 2.5);
+                (hx * hx + hy * hy - 1.0).powi(3) <= hx * hx * hy.powi(3)
             }
         }
     }
@@ -233,12 +249,15 @@ pub struct SolidGlyphs {
     pub play_large: iced::widget::image::Handle,
     pub pause_large: iced::widget::image::Handle,
     pub play_card: iced::widget::image::Handle,
+    /// Liked song: an accent heart.
+    pub heart: iced::widget::image::Handle,
 }
 
 /// Displayed edge of each solid glyph, in logical pixels.
 pub const SOLID_PLAYER: u32 = 16;
 pub const SOLID_LARGE: u32 = 24;
 pub const SOLID_CARD: u32 = 20;
+pub const SOLID_HEART: u32 = 16;
 
 impl SolidGlyphs {
     pub fn new(palette: &Palette) -> Self {
@@ -249,6 +268,7 @@ impl SolidGlyphs {
             play_large: solid(Solid::Play, c.on_accent, SOLID_LARGE),
             pause_large: solid(Solid::Pause, c.on_accent, SOLID_LARGE),
             play_card: solid(Solid::Play, c.on_accent, SOLID_CARD),
+            heart: solid(Solid::Heart, c.accent, SOLID_HEART),
         }
     }
 }

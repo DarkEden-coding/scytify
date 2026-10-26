@@ -454,6 +454,33 @@ pub(super) fn handle_command(
             handles.insert(id, h);
             None
         }
+        Action::SetSaved { .. } | Action::CheckSaved(_) => {
+            if matches!(&action, Action::CheckSaved(items) if items.len() > MAX_SAVED_CHECK) {
+                return Some(Err(safe(ErrorKind::InvalidInput, "too many library items")));
+            }
+            let (Some(t), AuthState::Ready { .. }) = (tokens.as_ref(), &state.auth) else {
+                return Some(Err(safe(ErrorKind::Authentication, "sign in first")));
+            };
+            if jobs.len() >= 4 {
+                return Some(Err(safe(ErrorKind::Unavailable, "backend is busy")));
+            }
+            let (a, token) = (api.clone(), t.access_token.clone());
+            let h = jobs.spawn(async move {
+                let result = match action {
+                    Action::SetSaved { item, saved } => a
+                        .set_saved(&token, &item, saved)
+                        .await
+                        .map(|()| Response::Accepted),
+                    Action::CheckSaved(items) => {
+                        a.check_saved(&token, &items).await.map(Response::Saved)
+                    }
+                    _ => unreachable!(),
+                };
+                Job::Response(id, result)
+            });
+            handles.insert(id, h);
+            None
+        }
         Action::Artwork { url, .. } => {
             match store.cached_artwork(&url) {
                 Ok(Some(bytes)) => return Some(Ok(Response::Artwork { bytes })),

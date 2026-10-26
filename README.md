@@ -31,7 +31,8 @@ integration have not been implemented or tested.
    This step opens Spotify in your browser only when you request it.
 
 The app requests private and collaborative playlists, your profile, saved library
-(`user-library-read`), streaming, and playback permissions
+(`user-library-read`, and `user-library-modify` plus `playlist-modify-public` to like
+songs and save albums and playlists), streaming, and playback permissions
 (`user-read-playback-state`, `user-modify-playback-state`,
 `user-read-currently-playing`). If you authorized an earlier version, sign out in
 Settings and sign in again to grant the new scopes. Spotify does not upgrade old

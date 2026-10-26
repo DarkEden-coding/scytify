@@ -20,6 +20,19 @@ impl Ui {
             if matches!(&self.query, Query::Search { text } if text.trim().is_empty()) {
                 return self.scroll_page(self.search_start());
             }
+            if let Some(error) = &self.page_error {
+                return self.scroll_page(
+                    column![
+                        self.strong("This page could not be loaded."),
+                        self.subdued(error),
+                        self.control(self.label("Retry"))
+                            .on_press(Message::RetryPage),
+                    ]
+                    .spacing(self.palette.shape.spacing)
+                    .padding(CONTENT_PADDING)
+                    .into(),
+                );
+            }
             let status = if self.pending.is_some() {
                 "Loading…"
             } else {

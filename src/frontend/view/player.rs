@@ -170,8 +170,9 @@ impl Ui {
             .align_y(Alignment::Center)
             .into();
         };
-        // The left column is three tenths of the bar, minus the cover and gaps.
-        let width: f32 = (self.window_size.width * 0.3 - ART - 40.0).max(80.0);
+        // The left column is three tenths of the bar, minus the cover, the heart and gaps.
+        let width: f32 =
+            (self.window_size.width * 0.3 - ART - super::tracklist::LIKE_WIDTH - 52.0).max(80.0);
         row![
             self.cover(track.artwork_url(), ART, Shape::Cover),
             column![
@@ -180,6 +181,7 @@ impl Ui {
                     .wrapping(Wrapping::None),
             ]
             .spacing(4),
+            self.like_button(track),
         ]
         .spacing(14)
         .align_y(Alignment::Center)

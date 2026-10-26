@@ -631,6 +631,18 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
             },
             Action::CancelRequest(_) => continue,
             Action::Lyrics { track_id } => Response::Lyrics(Some(synthetic_lyrics(track_id))),
+            // Every third song is liked; albums and playlists start unsaved.
+            Action::CheckSaved(items) => Response::Saved(
+                items
+                    .iter()
+                    .map(|item| match item {
+                        LibraryItem::Track(id) => {
+                            id.0.bytes().map(usize::from).sum::<usize>() % 3 == 0
+                        }
+                        _ => false,
+                    })
+                    .collect(),
+            ),
             _ => Response::Accepted,
         };
         // Keep the anchor continuous: a playing track advances by the time since the last one.

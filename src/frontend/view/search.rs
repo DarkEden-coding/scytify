@@ -197,7 +197,9 @@ impl Ui {
     /// artists, duration. Click selects, double-click plays.
     fn search_songs<'a>(&'a self, tracks: &'a [Track], width: f32) -> Element<'a> {
         let p: &Palette = &self.palette;
-        let text_width: f32 = width - 2.0 * ROW_PADDING - THUMB - 2.0 * THUMB_GAP - DURATION_WIDTH;
+        let like_width: f32 = super::tracklist::LIKE_WIDTH;
+        let text_width: f32 =
+            width - 2.0 * ROW_PADDING - THUMB - 3.0 * THUMB_GAP - like_width - DURATION_WIDTH;
         let mut rows = column![];
         for (index, item) in tracks.iter().enumerate().take(SEARCH_SONGS) {
             let hovered: bool = self.hovered_row == Some(index);
@@ -223,10 +225,17 @@ impl Ui {
                     .on_press(play.clone()),
                 );
             }
+            let like: Element<'a> =
+                if hovered || self.is_saved(&LibraryItem::Track(item.id.clone())) {
+                    self.like_button(item)
+                } else {
+                    space().into()
+                };
             let cells = row![
                 thumb,
                 self.track_title(item, current, text_width)
                     .width(Length::Fill),
+                container(like).width(like_width).center_x(like_width),
                 self.subdued(clock(item.duration_ms))
                     .width(DURATION_WIDTH)
                     .align_x(iced::alignment::Horizontal::Right),

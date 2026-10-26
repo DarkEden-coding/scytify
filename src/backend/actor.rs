@@ -257,7 +257,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     polling.revision = polling.revision.wrapping_add(1);
                     super::remote::apply(&mut state, observation, RemoteSource::Live, spirc);
                     hydrate_observation(&mut state, &metadata);
-                    if spirc && !state.connect.is_remote() && q.observe_connect(&state.player, &state.connect.queue_preview).unwrap_or(false) {
+                    if spirc && !state.connect.is_remote() && observe_spirc(&mut state, &mut q) {
                         checkpoint(&store, &q, &port.events);
                     }
                     request_observed_metadata(&state, &metadata, &tokens, &api, auth_epoch, &mut jobs);
@@ -482,8 +482,7 @@ fn finish_job(
                     hydrate_observation(state, metadata);
                     if player.as_ref().is_some_and(|p| p.connect.is_some())
                         && !state.connect.is_remote()
-                        && q.observe_connect(&state.player, &state.connect.queue_preview)
-                            .unwrap_or(false)
+                        && observe_spirc(state, q)
                     {
                         checkpoint(store, q, events);
                     }
@@ -1421,9 +1420,7 @@ fn handle_player_event(
     match update {
         playback::Update::Track(track) if spirc => {
             state.player.current = Some(metadata.get(&track.id).cloned().unwrap_or(*track));
-            return q
-                .observe_connect(&state.player, &state.connect.queue_preview)
-                .unwrap_or(false);
+            return observe_spirc(state, q);
         }
         playback::Update::Shuffle(shuffle) if spirc => {
             state.player.shuffle = shuffle;
@@ -1521,6 +1518,17 @@ fn handle_player_event(
     queue_dirty
 }
 
+/// Moves the local queue to what Spirc plays and shows its occurrence, so MPRIS gets a new
+/// track ID and an open queue panel reloads. Returns whether the queue changed.
+fn observe_spirc(state: &mut AppState, q: &mut Queue) -> bool {
+    let changed: bool = q
+        .observe_connect(&state.player, &state.connect.queue_preview)
+        .unwrap_or(false);
+    if changed {
+        sync_queue(state, q);
+    }
+    changed
+}
 /// Copies queue membership/options without changing the playback position anchor.
 pub(super) fn sync_queue(s: &mut AppState, q: &Queue) {
     s.player.current_entry_id = q.snapshot.current.as_ref().map(|x| x.entry_id);

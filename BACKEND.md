@@ -134,7 +134,7 @@ transfer or queue edit, restart restoration is limited to the available preview;
 the live Connect queue itself remains owned by Spirc.
 
 Web API OAuth scopes are `playlist-read-private playlist-read-collaborative user-read-private
-user-library-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state
+user-library-read user-library-modify playlist-modify-public user-read-recently-played streaming user-read-playback-state user-modify-playback-state
 user-read-currently-playing`. Tokens from earlier versions must be replaced by
 signing out and signing in again. Library and playback 403 responses return a
 Permission error with reauthorization instructions. Premium and developer-app
@@ -291,7 +291,7 @@ Spotify, credential, audio, desktop, or network services.
 `CS_PREVIEW_PLAYBACK_AUTH=needs-authorization` shows the new consent controls;
 combine it with `CS_PREVIEW_NO_CONNECT=1` for the synthetic local-device row.
 
-Queries: `OwnPlaylists`, `PlaylistTracks`, `AlbumTracks`, `ArtistAlbums`, `LikedTracks` (`me/tracks` → `PageData::Tracks`), `SavedAlbums` (`me/albums` → `PageData::Albums`), `Search` and the paged `SearchArtists`/`SearchAlbums`/`SearchTracks`. Library pages unwrap the saved-item wrappers (`{added_at, track}`, `{added_at, album}`). Pages drop rows: playlist pages keep only playlists the user owns, and track pages drop local files, episodes and unparseable rows. Every page therefore reports `next_offset`, the request offset plus the raw item count, and the UI continues paging from it. Each remaining `Track` also carries `source_index`, its raw position in the upstream listing, which the UI uses for `start_offset`; this keeps play offsets aligned with the occurrences `load_source` counts. `Search { text }` makes one `type=artist,album,track` request and returns `PageData::Search(SearchResults)`: up to `SEARCH_LIMIT` (10, Spotify's development-mode maximum) artists, albums and tracks, skipping null entries; it is not paged and ignores the page offset. The single-type search queries return normal pages for "see all" views. Spotify serves at most 50 items per request, or 10 for a search type, so a larger page is fetched as consecutive upstream pages at once and joined. A page therefore covers its whole requested range unless the listing ends, which lets the UI put a page fetched while scrolling up directly in front of the rows it has loaded.
+Queries: `OwnPlaylists`, `PlaylistTracks`, `AlbumTracks`, `ArtistAlbums`, `LikedTracks` (`me/tracks` → `PageData::Tracks`), `SavedAlbums` (`me/albums` → `PageData::Albums`), `Search` and the paged `SearchArtists`/`SearchAlbums`/`SearchTracks`. Library pages unwrap the saved-item wrappers (`{added_at, track}`, `{added_at, album}`). Pages drop rows: playlist pages keep only playlists the user owns or followed Spotify playlists (which the playback session reads), and track pages drop local files, episodes and unparseable rows. Every page therefore reports `next_offset`, the request offset plus the raw item count, and the UI continues paging from it. Each remaining `Track` also carries `source_index`, its raw position in the upstream listing, which the UI uses for `start_offset`; this keeps play offsets aligned with the occurrences `load_source` counts. `Search { text }` makes one `type=artist,album,track` request and returns `PageData::Search(SearchResults)`: up to `SEARCH_LIMIT` (10, Spotify's development-mode maximum) artists, albums and tracks, skipping null entries; it is not paged and ignores the page offset. The single-type search queries return normal pages for "see all" views. Spotify serves at most 50 items per request, or 10 for a search type, so a larger page is fetched as consecutive upstream pages at once and joined. A page therefore covers its whole requested range unless the listing ends, which lets the UI put a page fetched while scrolling up directly in front of the rows it has loaded.
 
 Playlist, album and Liked Songs (`PlaySource::LikedSongs { start_offset }`) Play operations gather all upstream pages before atomically replacing queue membership. Liked Songs has no snapshot ID, so every gathered page must report the same `total`; a change during loading returns StaleQueue. Liked Songs offsets match `Query::LikedTracks` rows because that endpoint returns no local files or episodes. A single search result plays through `PlaySource::Track`. Start offsets are interpreted against raw Spotify source occurrences; selecting a local, episode, or unavailable occurrence returns an explicit error rather than silently moving the index. Visible queue pages hydrate metadata in bounded batches while retaining duplicate occurrence IDs. The actor keeps at most 512 hydrated tracks, prunes large batches in one pass, and fetches missing current-track metadata as playback advances.
 
@@ -312,6 +312,17 @@ session ID to KEYMASTER. The token's originating client identity must also match
 This design follows librespot's binary; using Spotify's client identity and
 internal APIs remains a Terms of Service grey area. Spotify may reject it due to
 account policy or protocol changes. No live account was used in automated verification. ALSA is the compiled output backend in this dependency set, so machines without a usable ALSA device receive a sink/player error. The bounded cache stores artwork and encrypted audio files. Offline playback is not claimed: cached files still need a session for their keys.
+
+## Your Library
+
+`SetSaved { item, saved }` saves (`PUT`) or removes (`DELETE`) one `LibraryItem` (track,
+album or playlist) through `me/library?uris=spotify:<type>:<id>`, the URI-based endpoint
+that replaced `me/tracks`, `me/albums` and `playlists/{id}/followers` in February 2026.
+`CheckSaved(items)` answers `Response::Saved`, one flag per item in order, from
+`me/library/contains`; the endpoint takes 40 URIs, so a request (at most
+`MAX_SAVED_CHECK`, 120) is split into concurrent calls and joined. Both use a job slot
+and need sign-in. Writing needs `user-library-modify` (`playlist-modify-public` for
+playlists); a token without it gets a Permission error asking to sign in again.
 
 ## Lyrics
 
