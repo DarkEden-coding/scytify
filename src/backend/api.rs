@@ -313,6 +313,8 @@ impl Api {
             .http
             .request(method, url)
             .bearer_auth(token)
+            // Spotify requires an explicit length for body-less library writes.
+            .header(reqwest::header::CONTENT_LENGTH, 0)
             .send()
             .await
             .map_err(|_| err(ErrorKind::Network, "Spotify is unreachable"))?;
@@ -968,7 +970,8 @@ mod tests {
     }
 
     /// Saving and checking go through the URI-based `me/library` endpoints, and checks
-    /// longer than the endpoint's 40-URI cap are split and joined in order.
+    /// longer than the endpoint's 40-URI cap are split and joined in order. Empty
+    /// writes must declare Content-Length or Spotify rejects them with HTTP 411.
     #[tokio::test]
     async fn library_saves_by_uri_and_checks_in_chunks_of_forty() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1015,7 +1018,14 @@ mod tests {
                 } else {
                     String::new()
                 };
-                let status = if url.path().starts_with("/v1/me/library") {
+                let empty_body_declared = request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length") && value.trim() == "0"
+                    })
+                });
+                let status = if method != "GET" && !empty_body_declared {
+                    "411 Length Required"
+                } else if url.path().starts_with("/v1/me/library") {
                     "200 OK"
                 } else {
                     "404 Not Found"
@@ -1035,8 +1045,11 @@ mod tests {
         let saved = api.check_saved("test-token", &items).await.unwrap();
         assert_eq!(saved, (0..50).map(|i| i % 2 == 1).collect::<Vec<_>>());
         let album = LibraryItem::Album(SpotifyId("0123456789012345678901".into()));
-        api.set_saved("test-token", &album, true).await.unwrap();
-        api.set_saved("test-token", &track(3), false).await.unwrap();
+        let playlist = LibraryItem::Playlist(SpotifyId("playlist00000000000001".into()));
+        for item in [&track(3), &album, &playlist] {
+            api.set_saved("test-token", item, true).await.unwrap();
+            api.set_saved("test-token", item, false).await.unwrap();
+        }
         server.abort();
 
         let requests = requests.lock().unwrap();
@@ -1052,21 +1065,23 @@ mod tests {
             .filter(|(method, ..)| method != "GET")
             .cloned()
             .collect();
-        assert_eq!(
-            writes,
-            [
+        let expected: Vec<_> = [
+            "spotify:track:track00000000000000003",
+            "spotify:album:0123456789012345678901",
+            "spotify:playlist:playlist00000000000001",
+        ]
+        .into_iter()
+        .flat_map(|uri| {
+            ["PUT", "DELETE"].map(|method| {
                 (
-                    "PUT".to_owned(),
+                    method.to_owned(),
                     "/v1/me/library".to_owned(),
-                    vec!["spotify:album:0123456789012345678901".to_owned()]
-                ),
-                (
-                    "DELETE".to_owned(),
-                    "/v1/me/library".to_owned(),
-                    vec!["spotify:track:track00000000000000003".to_owned()]
-                ),
-            ]
-        );
+                    vec![uri.to_owned()],
+                )
+            })
+        })
+        .collect();
+        assert_eq!(writes, expected);
     }
 
     #[test]

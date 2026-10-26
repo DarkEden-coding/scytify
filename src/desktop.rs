@@ -1,4 +1,9 @@
-//! Linux MPRIS adapter.
+//! Native desktop media controls.
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::run;
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -380,9 +385,8 @@ mod linux {
 #[cfg(target_os = "linux")]
 pub use linux::run;
 
-/// Desktop integration is currently implemented only on Linux; elsewhere it is silently absent
-/// rather than reported as a failure on every launch.
-#[cfg(not(target_os = "linux"))]
+/// Other platforms currently have no desktop media adapter.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub async fn run(
     _: tokio::sync::mpsc::Sender<crate::contracts::Command>,
     _: tokio::sync::mpsc::Sender<crate::contracts::Event>,

@@ -1,4 +1,26 @@
-# Linux desktop integration
+# Desktop integration
+
+## macOS
+
+The macOS adapter in `src/desktop/macos.rs` registers play, pause, toggle, stop,
+next, and previous commands with `MPRemoteCommandCenter`. Commands go through the
+same bounded backend channel as the UI. Track metadata, duration, elapsed time,
+and playback state are published through `MPNowPlayingInfoCenter` on the main
+queue. Stopped playback and playback on another Spotify Connect device clear
+the Mac's Now Playing entry. The adapter removes its command targets when stopped.
+
+The Rodio backend opens CoreAudio output when playback starts and releases it
+when paused or stopped. Resuming resolves the current default output again.
+This avoids keeping audio IO running silently between playback sessions and
+lets macOS manage AirPods routing. Automatic switching still depends on the
+AirPods settings and macOS; the app does not force a Bluetooth device selection.
+
+After rebuilding, reinstall the app with `tools/install.sh` to update the bundle
+used by launchers. Check media keys with the app in the background, AirPods
+play/pause and skip controls, switching from another Apple device when starting
+playback, and changing the default output while paused and while playing.
+
+## Linux
 
 ## Dependencies for the integrator
 

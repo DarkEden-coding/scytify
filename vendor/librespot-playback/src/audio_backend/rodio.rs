@@ -71,9 +71,16 @@ impl From<cpal::SupportedStreamConfigsError> for RodioError {
     }
 }
 
-pub struct RodioSink {
-    rodio_sink: rodio::Sink,
+struct RodioOutput {
+    sink: rodio::Sink,
     _stream: rodio::OutputStream,
+}
+
+pub struct RodioSink {
+    output: Option<RodioOutput>,
+    host: cpal::Host,
+    device: Option<String>,
+    format: AudioFormat,
 }
 
 fn list_formats(device: &cpal::Device) {
@@ -219,24 +226,53 @@ pub fn open(host: cpal::Host, device: Option<String>, format: AudioFormat) -> Ro
         host.id().name()
     );
 
-    let (sink, stream) = create_sink(&host, device, format).unwrap();
-
-    debug!("Rodio sink was created");
+    // On macOS an idle CoreAudio stream still counts as running audio IO. Open it only
+    // when playback starts, and release it when paused so Bluetooth automatic switching
+    // can observe a fresh playback session and the current default output is resolved again.
+    #[cfg(target_os = "macos")]
+    let output = None;
+    #[cfg(not(target_os = "macos"))]
+    let output = {
+        let (sink, stream) = create_sink(&host, device.clone(), format).unwrap();
+        Some(RodioOutput {
+            sink,
+            _stream: stream,
+        })
+    };
     RodioSink {
-        rodio_sink: sink,
-        _stream: stream,
+        output,
+        host,
+        device,
+        format,
+    }
+}
+
+impl RodioSink {
+    fn output(&mut self) -> Result<&mut RodioOutput, RodioError> {
+        if self.output.is_none() {
+            let (sink, stream) = create_sink(&self.host, self.device.clone(), self.format)?;
+            self.output = Some(RodioOutput {
+                sink,
+                _stream: stream,
+            });
+        }
+        Ok(self.output.as_mut().unwrap())
     }
 }
 
 impl Sink for RodioSink {
     fn start(&mut self) -> SinkResult<()> {
-        self.rodio_sink.play();
+        self.output()?.sink.play();
         Ok(())
     }
 
     fn stop(&mut self) -> SinkResult<()> {
-        self.rodio_sink.sleep_until_end();
-        self.rodio_sink.pause();
+        if let Some(output) = &self.output {
+            output.sink.sleep_until_end();
+            output.sink.pause();
+        }
+        #[cfg(target_os = "macos")]
+        self.output.take();
         Ok(())
     }
 
@@ -250,12 +286,13 @@ impl Sink for RodioSink {
             SAMPLE_RATE,
             samples_f32,
         );
-        self.rodio_sink.append(source);
+        let output = self.output()?;
+        output.sink.append(source);
 
         // Chunk sizes seem to be about 256 to 3000 ish items long.
         // Assuming they're on average 1628 then a half second buffer is:
         // 44100 elements --> about 27 chunks
-        while self.rodio_sink.len() > 26 {
+        while output.sink.len() > 26 {
             // sleep and wait for rodio to drain a bit
             thread::sleep(Duration::from_millis(10));
         }

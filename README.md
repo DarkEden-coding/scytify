@@ -18,7 +18,8 @@ script is incompatible with the newer 9.1 dependency combination.
 
 Linux is the primary target. On macOS (Apple Silicon), the same command builds with
 Xcode's command-line tools and Rust alone: audio plays through CoreAudio and
-credentials live in the login Keychain. MPRIS media keys are Linux-only.
+credentials live in the login Keychain. macOS media keys and AirPods playback controls
+use the native Now Playing integration; Linux media keys use MPRIS.
 `tools/install.sh` builds and installs (or updates) `~/Applications/Custom Spotify.app`,
 which Spotlight, Launchpad and other launchers pick up. It is ad-hoc signed, so after
 an update macOS may ask once more for Keychain access.
