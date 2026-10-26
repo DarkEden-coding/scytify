@@ -16,8 +16,10 @@ cargo run --release --locked
 Use `--locked`: the lockfile pins `vergen` 9.0.6 because librespot 0.8's build
 script is incompatible with the newer 9.1 dependency combination.
 
-Linux is the initial target. macOS audio output, credential storage, and desktop
-integration have not been implemented or tested.
+Linux is the primary target. On macOS (Apple Silicon), the same command builds with
+Xcode's command-line tools and Rust alone: audio plays through CoreAudio and
+credentials live in the login Keychain. MPRIS media keys and `tools/install.sh` are
+Linux-only.
 
 ## Connect an account
 

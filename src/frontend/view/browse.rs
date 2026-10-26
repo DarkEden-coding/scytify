@@ -576,7 +576,7 @@ impl Ui {
                 text(status)
                     .font(p.bold_font())
                     .size(p.font_size.display),
-                self.label("Requires Premium and an eligible developer app. Set your public Client ID in Settings and register the exact loopback redirect used by the backend. Credentials stay in the OS Secret Service, never in this form.")
+                self.label("Requires Premium and an eligible developer app. Set your public Client ID in Settings and register the exact loopback redirect used by the backend. Credentials stay in your system keyring, never in this form.")
                     .color(p.colors.text_subdued),
                 row![
                     self.primary("Authorize in browser", Message::Action(Action::BeginLogin)),

@@ -99,8 +99,12 @@ fn secret_service<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T,
 
 /// Redacts backend-specific keyring failure details.
 fn safe_keyring(_: keyring::Error) -> String {
-    "Linux Secret Service is unavailable or locked; unlock a Secret Service collection and retry"
-        .into()
+    if cfg!(target_os = "macos") {
+        "macOS Keychain is unavailable or locked; unlock the login keychain and retry".into()
+    } else {
+        "Linux Secret Service is unavailable or locked; unlock a Secret Service collection and retry"
+            .into()
+    }
 }
 
 /// Runs Spotify authorization-code PKCE against an already configured public developer client ID.

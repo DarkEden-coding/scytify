@@ -10,7 +10,7 @@ env_logger = "0.11"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "net", "macros", "io-util"] }
-iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "wayland", "x11", "tokio", "image-without-codecs", "advanced"] }
+iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "tokio", "image-without-codecs", "advanced"] }
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0"
@@ -29,9 +29,17 @@ futures-util = "0.3"
 librespot-protocol = "=0.8.0"
 librespot-metadata = { version = "=0.8.0", default-features = false }
 librespot-connect = { version = "=0.8.0", default-features = false }
-librespot-playback = { version = "0.8.0", default-features = false, features = ["alsa-backend", "rustls-tls-native-roots"] }
+librespot-playback = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 open = "5.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["wayland", "x11"] }
+librespot-playback = { version = "0.8.0", default-features = false, features = ["alsa-backend"] }
 mpris-server = { version = "0.10.0", default-features = false, features = ["tokio"] }
+
+# CoreAudio output through cpal.
+[target.'cfg(target_os = "macos")'.dependencies]
+librespot-playback = { version = "0.8.0", default-features = false, features = ["rodio-backend"] }
 
 [profile.release]
 lto = "thin"

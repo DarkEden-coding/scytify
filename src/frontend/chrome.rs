@@ -43,6 +43,7 @@ impl Ui {
     /// Settings of the main window, from the remembered geometry, zoom and title bar choice.
     pub(super) fn window_settings(&self) -> window::Settings {
         let rgba = crate::app_icon::rgba(256);
+        #[cfg_attr(not(target_os = "linux"), expect(unused_mut))]
         let mut settings = window::Settings {
             size: self.restore_size,
             position: self
