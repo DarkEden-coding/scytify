@@ -53,6 +53,9 @@ librespot-playback = { path = "vendor/librespot-playback" }
 # hyper-proxy2 0.1.0 (via librespot-core) pins rustls 0.22 / rustls-webpki 0.102,
 # which have unpatched advisories; the vendored copy moves it to rustls 0.23.
 hyper-proxy2 = { path = "vendor/hyper-proxy2" }
+# block 0.1.6 (via iced's Metal renderer on macOS) is unmaintained and declares an uninhabited
+# extern static that future Rust rejects; the vendored copy makes the type opaque instead.
+block = { path = "vendor/block" }
 
 [workspace]
 members = ["vendor/librespot-oauth"]

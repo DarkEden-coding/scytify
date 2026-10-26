@@ -380,16 +380,13 @@ mod linux {
 #[cfg(target_os = "linux")]
 pub use linux::run;
 
-/// Reports that desktop integration is currently implemented only on Linux.
+/// Desktop integration is currently implemented only on Linux; elsewhere it is silently absent
+/// rather than reported as a failure on every launch.
 #[cfg(not(target_os = "linux"))]
 pub async fn run(
     _: tokio::sync::mpsc::Sender<crate::contracts::Command>,
     _: tokio::sync::mpsc::Sender<crate::contracts::Event>,
     _: tokio::sync::watch::Receiver<crate::domain::AppState>,
 ) -> Result<(), crate::contracts::AppError> {
-    Err(crate::contracts::AppError {
-        kind: crate::contracts::ErrorKind::Unavailable,
-        message: "desktop integration is unsupported on this platform".into(),
-        retry_after_seconds: None,
-    })
+    Ok(())
 }

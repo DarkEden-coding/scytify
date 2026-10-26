@@ -110,6 +110,8 @@ enum Message {
     /// Animation frame while a glide is running.
     GlideFrame(std::time::Instant),
     Client(String),
+    /// Start browser sign-in, first applying a Client ID that was typed but not saved.
+    Authorize,
     Cache(String),
     ThemePath(String),
     ChooseTheme(Option<PathBuf>),
@@ -769,6 +771,27 @@ impl Ui {
             .unwrap_or_default();
         self.themes = bundled_themes();
     }
+    /// Sign-in needs a saved Client ID. A typed one is saved first (the backend handles
+    /// commands in order); with none at all, Settings opens to ask for it instead.
+    fn authorize(&mut self) {
+        let typed: &str = self.client.trim();
+        if !typed.is_empty() && self.state.settings.client_id.as_deref() != Some(typed) {
+            let mut settings: crate::domain::Settings = self.state.settings.clone();
+            settings.client_id = Some(typed.into());
+            self.send(Action::Configure(settings));
+        } else if typed.is_empty() && self.state.settings.client_id.is_none() {
+            self.show_notice(
+                "Add your Spotify developer app's Client ID in Settings, then authorize.".into(),
+            );
+            if !self.settings {
+                let mut route: Route = self.route();
+                route.settings = true;
+                self.navigate(route);
+            }
+            return;
+        }
+        self.send(Action::BeginLogin);
+    }
     /// The place the main view currently shows.
     fn route(&self) -> Route {
         Route {
@@ -935,12 +958,9 @@ impl Ui {
                 self.main_size = self.estimated_main_size();
                 self.sidebar_viewport = size.height;
                 self.queue_viewport = size.height;
-                return self.track_geometry(id);
+                return self.track_maximized(id);
             }
-            Message::Window(id, window::Event::Moved(position)) => {
-                self.set_position(position);
-                return self.track_geometry(id);
-            }
+            Message::Window(_, window::Event::Moved(position)) => self.set_position(position),
             Message::Maximized(maximized) => self.set_maximized(maximized),
             Message::Minimize => {
                 if let Some(id) = self.window {
@@ -949,6 +969,10 @@ impl Ui {
             }
             Message::ToggleMaximize => {
                 if let Some(id) = self.window {
+                    // The resize that follows records the new state and restore geometry.
+                    if self.tracks_own_maximize() {
+                        self.maximized = !self.maximized;
+                    }
                     return window::toggle_maximize(id);
                 }
             }
@@ -1423,6 +1447,7 @@ impl Ui {
                 self.send(Action::Configure(settings));
             }
             Message::Client(s) => self.client = s,
+            Message::Authorize => self.authorize(),
             Message::Cache(s) => self.cache = s,
             Message::ThemePath(s) => self.theme_path = s,
             Message::ChooseTheme(path) => {

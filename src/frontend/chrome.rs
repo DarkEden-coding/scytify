@@ -85,10 +85,22 @@ impl Ui {
         }
     }
 
-    /// Ask the window system whether the window is maximized and where it is; the answer
-    /// arrives as `Message::Maximized`.
-    pub(super) fn track_geometry(&self, id: window::Id) -> Task<Message> {
+    /// Ask the window system whether the window is maximized; the answer arrives as
+    /// `Message::Maximized`. Only asked after a resize, since maximizing always changes the
+    /// size.
+    pub(super) fn track_maximized(&self, id: window::Id) -> Task<Message> {
+        if self.tracks_own_maximize() {
+            return Task::done(Message::Maximized(self.maximized));
+        }
         window::is_maximized(id).map(Message::Maximized)
+    }
+
+    /// On macOS, asking whether a frameless window is maximized briefly gives it a title
+    /// bar, which moves it 32 points (and each move used to ask again, spinning the CPU).
+    /// There the app's own maximize button is the only way to maximize, so the app keeps
+    /// the state itself.
+    pub(super) fn tracks_own_maximize(&self) -> bool {
+        cfg!(target_os = "macos") && self.custom_chrome()
     }
 
     /// Record the maximized state. The geometry to restore changes only while not maximized.
@@ -103,12 +115,20 @@ impl Ui {
         }
     }
 
-    /// Record a window move reported by the window system (never sent on native Wayland).
+    /// Record a window move reported by the window system (never sent on native Wayland),
+    /// remembering it as the place to reopen unless the window is maximized.
     pub(super) fn set_position(&mut self, position: iced::Point) {
-        self.position = Some(iced::Point::new(
-            position.x * self.zoom,
-            position.y * self.zoom,
-        ));
+        let position = iced::Point::new(position.x * self.zoom, position.y * self.zoom);
+        if self.position == Some(position) {
+            return;
+        }
+        self.position = Some(position);
+        if !self.maximized {
+            self.restore_position = self.position;
+            if let Err(e) = persistence::Preferences::save(self) {
+                self.notice = e;
+            }
+        }
     }
 
     /// Change the UI zoom, keeping the window's real size: layout sizes shrink as it grows.

@@ -11,6 +11,8 @@ const AUTH_ENTRIES: [&str; 2] = [WEB_API_ENTRY, PLAYBACK_ENTRY];
 
 const SERVICE: &str = "dev.customspotify.CustomSpotify";
 const REDIRECT_PORT: u16 = 43817;
+/// The redirect users register in their developer app; it must match the port above.
+pub const REDIRECT_URI: &str = "http://127.0.0.1:43817/callback";
 /// Reading permissions, plus saving to Your Library (`user-library-modify`, and
 /// `playlist-modify-public` for following playlists). Adding one requires existing users to
 /// sign in again; library endpoints report that as a Permission error instead of failing
@@ -122,13 +124,12 @@ pub(crate) async fn authorize(client_id: &str) -> Result<Tokens, String> {
     let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random);
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
-    let redirect = format!("http://127.0.0.1:{REDIRECT_PORT}/callback");
     let mut u = url::Url::parse("https://accounts.spotify.com/authorize")
         .map_err(|_| "authorization endpoint is invalid")?;
     u.query_pairs_mut()
         .append_pair("client_id", client_id)
         .append_pair("response_type", "code")
-        .append_pair("redirect_uri", &redirect)
+        .append_pair("redirect_uri", REDIRECT_URI)
         .append_pair("code_challenge_method", "S256")
         .append_pair("code_challenge", &challenge)
         .append_pair("state", &state)
@@ -177,7 +178,7 @@ pub(crate) async fn authorize(client_id: &str) -> Result<Tokens, String> {
         .append_pair("client_id", client_id)
         .append_pair("grant_type", "authorization_code")
         .append_pair("code", &code)
-        .append_pair("redirect_uri", &redirect)
+        .append_pair("redirect_uri", REDIRECT_URI)
         .append_pair("code_verifier", &verifier)
         .finish();
     let r = token_client()?
@@ -271,6 +272,14 @@ fn token_client() -> Result<reqwest::Client, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displayed_redirect_matches_callback_listener() {
+        assert_eq!(
+            REDIRECT_URI,
+            format!("http://127.0.0.1:{REDIRECT_PORT}/callback")
+        );
+    }
 
     #[test]
     fn sign_out_clears_separate_web_and_playback_entries_even_after_failure() {

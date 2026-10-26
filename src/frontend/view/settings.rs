@@ -7,8 +7,17 @@ use iced::widget::{rule, scrollable, text_input};
 
 /// Column of key combinations in the shortcut list.
 const KEYS_WIDTH: f32 = 140.0;
+/// Where users create the developer app whose Client ID the app needs.
+const DEVELOPER_DASHBOARD: &str = "https://developer.spotify.com/dashboard";
 
 impl Ui {
+    /// Opens Spotify's developer dashboard, where the Client ID is created and shown.
+    pub(super) fn dashboard_link(&self) -> Element<'_> {
+        self.control(self.label("Get a Client ID"))
+            .on_press(Message::OpenLink(DEVELOPER_DASHBOARD.into()))
+            .into()
+    }
+
     /// Edit a full configuration based on authoritative state, preserving untouched fields.
     /// Spicy Lyrics key entry; the saved key is never shown again.
     fn lyrics_key_field(&self) -> Element<'_> {
@@ -62,7 +71,7 @@ impl Ui {
             .into()
         } else {
             row![
-                self.primary("Authorize in browser", Message::Action(Action::BeginLogin)),
+                self.primary("Authorize in browser", Message::Authorize),
                 self.control(self.label("Cancel"))
                     .on_press(Message::Action(Action::CancelLogin)),
             ]
@@ -107,13 +116,19 @@ impl Ui {
             ),
             self.setting_section(
                 "Spotify developer app",
-                "Register the backend's exact http://127.0.0.1:PORT/callback redirect in your developer app. Use the public Client ID, never a client secret. Playback and Spotify Connect use a separate one-time browser consent above.",
-                self.field(
-                    "Client ID",
-                    text_input("Client ID", &self.client)
-                        .on_input(Message::Client)
-                        .on_submit(Message::Save),
-                ),
+                &format!("Create an app in Spotify's developer dashboard, register exactly {} as its redirect URI, and paste its Client ID here. Use the public Client ID, never a client secret. Playback and Spotify Connect use a separate one-time browser consent above.", crate::backend::REDIRECT_URI),
+                row![
+                    self.field(
+                        "Client ID",
+                        text_input("Client ID", &self.client)
+                            .on_input(Message::Client)
+                            .on_submit(Message::Save),
+                    ),
+                    self.dashboard_link(),
+                ]
+                .spacing(p.shape.spacing * 2.0)
+                .align_y(Alignment::End)
+                .into(),
             ),
             self.setting_section(
                 "Lyrics",

@@ -576,10 +576,16 @@ impl Ui {
                 text(status)
                     .font(p.bold_font())
                     .size(p.font_size.display),
-                self.label("Requires Premium and an eligible developer app. Set your public Client ID in Settings and register the exact loopback redirect used by the backend. Credentials stay in your system keyring, never in this form.")
+                self.label(format!("Requires Premium and an eligible developer app. Set your public Client ID in Settings and register exactly {} as its redirect URI. Credentials stay in your system keyring, never in this form.", crate::backend::REDIRECT_URI))
                     .color(p.colors.text_subdued),
                 row![
-                    self.primary("Authorize in browser", Message::Action(Action::BeginLogin)),
+                    self.primary("Authorize in browser", Message::Authorize),
+                    // Only needed until a Client ID is saved.
+                    self.state
+                        .settings
+                        .client_id
+                        .is_none()
+                        .then(|| self.dashboard_link()),
                     self.control(self.label("Account setup")).on_press(Message::Settings),
                     self.control(self.label("Cancel"))
                         .on_press(Message::Action(Action::CancelLogin)),

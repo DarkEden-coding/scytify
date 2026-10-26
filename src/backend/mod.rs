@@ -13,6 +13,7 @@ mod storage;
 mod transfer;
 
 use crate::{contracts::*, domain::*};
+pub use auth::REDIRECT_URI;
 
 /// Builds conservative startup state without disk, network, D-Bus, or credential access.
 pub fn initial_state() -> AppState {

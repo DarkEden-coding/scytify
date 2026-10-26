@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the release binary and install it as "~/Applications/Custom Spotify.app" for the current
 # user, so Spotlight, Launchpad, Raycast and Alfred find it. A running instance is asked to quit,
-# and is relaunched from the new bundle.
+# then the app is opened from the new bundle.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,7 +11,9 @@ bundle_id=com.customspotify.CustomSpotify
 app="$HOME/Applications/$display_name.app"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 
-cargo build --release --locked
+# rustc strips through rust-objcopy, which some rustup macOS toolchains ship unable to load
+# libLLVM.dylib ("stripping debug info ... failed"); Apple's strip does the same job below.
+CARGO_PROFILE_RELEASE_STRIP=none cargo build --release --locked
 
 was_running=false
 if pgrep -x "$name" >/dev/null; then
@@ -47,6 +49,7 @@ iconutil -c icns "$iconset" -o "$work/$name.icns"
 staged="$work/$display_name.app"
 mkdir -p "$staged/Contents/MacOS" "$staged/Contents/Resources"
 cp "target/release/$name" "$staged/Contents/MacOS/$name"
+strip -S "$staged/Contents/MacOS/$name"
 cp "$work/$name.icns" "$staged/Contents/Resources/$name.icns"
 cat >"$staged/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -81,7 +84,9 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 mdimport "$app" 2>/dev/null || true
 
 echo "Installed $app"
+open "$app"
 if $was_running; then
-    open "$app"
     echo "Relaunched."
+else
+    echo "Opened."
 fi
