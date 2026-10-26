@@ -5,6 +5,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [[ "$(uname -s)" == Darwin ]]; then
+    exec tools/install-macos.sh
+fi
+
 name=custom-spotify
 bin="$HOME/.local/bin/$name"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"

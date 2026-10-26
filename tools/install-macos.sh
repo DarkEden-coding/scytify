@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Build the release binary and install it as "~/Applications/Custom Spotify.app" for the current
+# user, so Spotlight, Launchpad, Raycast and Alfred find it. A running instance is asked to quit,
+# and is relaunched from the new bundle.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+name=custom-spotify
+display_name="Custom Spotify"
+bundle_id=com.customspotify.CustomSpotify
+app="$HOME/Applications/$display_name.app"
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+
+cargo build --release --locked
+
+was_running=false
+if pgrep -x "$name" >/dev/null; then
+    was_running=true
+    echo "Quitting the running app..."
+    osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
+    for _ in $(seq 50); do
+        pgrep -x "$name" >/dev/null || break
+        sleep 0.2
+    done
+    if pgrep -x "$name" >/dev/null; then
+        echo "Still running after 10 s; terminating it."
+        pkill -x "$name" || true
+        sleep 1
+    fi
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# iconutil wants each size at 1x and 2x; the 1024 px slot (512@2x) is optional.
+iconset="$work/$name.iconset"
+mkdir "$iconset"
+for size in 16 32 128 256 512; do
+    cp "assets/icons/$name-$size.png" "$iconset/icon_${size}x${size}.png"
+done
+for size in 16 32 128 256; do
+    cp "assets/icons/$name-$((size * 2)).png" "$iconset/icon_${size}x${size}@2x.png"
+done
+iconutil -c icns "$iconset" -o "$work/$name.icns"
+
+# Build the bundle beside the target and swap it in, so a failed step leaves the old app intact.
+staged="$work/$display_name.app"
+mkdir -p "$staged/Contents/MacOS" "$staged/Contents/Resources"
+cp "target/release/$name" "$staged/Contents/MacOS/$name"
+cp "$work/$name.icns" "$staged/Contents/Resources/$name.icns"
+cat >"$staged/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>$display_name</string>
+    <key>CFBundleDisplayName</key><string>$display_name</string>
+    <key>CFBundleIdentifier</key><string>$bundle_id</string>
+    <key>CFBundleExecutable</key><string>$name</string>
+    <key>CFBundleIconFile</key><string>$name</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$version</string>
+    <key>CFBundleVersion</key><string>$version</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
+    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+EOF
+# Ad-hoc sign the whole bundle so its signature covers Info.plist and resources.
+codesign --force --sign - "$staged" >/dev/null 2>&1
+
+mkdir -p "$HOME/Applications"
+rm -rf "$app"
+mv "$staged" "$app"
+
+# Register with Launch Services now instead of waiting for the next scan.
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$lsregister" -f "$app" 2>/dev/null || true
+mdimport "$app" 2>/dev/null || true
+
+echo "Installed $app"
+if $was_running; then
+    open "$app"
+    echo "Relaunched."
+fi
