@@ -12,6 +12,17 @@ const ICON: f32 = 22.0;
 /// Gap between the popover and the bar it opens from.
 const ANCHOR_GAP: f32 = 8.0;
 
+/// Prefer reported activity; infer local playback only when no device is reported active.
+fn current_device(connect: &ConnectState, status: PlaybackStatus) -> Option<&PlaybackDevice> {
+    devices::active(connect).or_else(|| {
+        if connect.active_device_id.is_none() && status == PlaybackStatus::Playing {
+            connect.devices.iter().find(|device| device.is_this_app)
+        } else {
+            None
+        }
+    })
+}
+
 impl Ui {
     /// Name of the device the banner points at.
     fn remote_name(&self) -> &str {
@@ -87,11 +98,15 @@ impl Ui {
         let connect: &ConnectState = &self.state.connect;
         let gap: f32 = p.shape.spacing;
         let mut content = column![].spacing(gap * 1.5);
-        if let Some(current) = devices::active(connect) {
+        let current = current_device(connect, self.state.player.status);
+        if let Some(current) = current {
             content = content.push(self.strong("Current device"));
             content = content.push(self.current_device_row(current));
         }
-        let others = devices::others(connect);
+        let others: Vec<_> = devices::others(connect)
+            .into_iter()
+            .filter(|device| current.is_none_or(|current| !std::ptr::eq(current, *device)))
+            .collect();
         content = content.push(self.strong("Select another device"));
         if others.is_empty() {
             content = content.push(self.no_devices());
@@ -198,5 +213,48 @@ impl Ui {
         .spacing(2)
         .padding([8.0, 0.0])
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::DeviceType;
+
+    fn device(id: &str, local: bool, active: bool) -> PlaybackDevice {
+        PlaybackDevice {
+            id: Some(id.into()),
+            name: id.into(),
+            device_type: DeviceType::Computer,
+            is_active: active,
+            is_this_app: local,
+            volume_percent: None,
+            supports_volume: true,
+            is_restricted: false,
+        }
+    }
+
+    #[test]
+    fn current_device_uses_local_playback_only_when_activity_is_unknown() {
+        let mut connect = ConnectState {
+            devices: vec![device("local", true, false), device("remote", false, false)],
+            ..ConnectState::default()
+        };
+        assert_eq!(
+            current_device(&connect, PlaybackStatus::Playing)
+                .unwrap()
+                .name,
+            "local"
+        );
+        assert!(current_device(&connect, PlaybackStatus::Paused).is_none());
+        connect.active_device_id = Some("missing".into());
+        assert!(current_device(&connect, PlaybackStatus::Playing).is_none());
+        connect.devices[1].is_active = true;
+        assert_eq!(
+            current_device(&connect, PlaybackStatus::Playing)
+                .unwrap()
+                .name,
+            "remote"
+        );
     }
 }

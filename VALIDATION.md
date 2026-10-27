@@ -1,6 +1,19 @@
 # Validation
 
-## Build and automated checks
+## Desktop parity implementation, 2026-10-27
+
+Automated checks on macOS Apple Silicon with Rust 1.98.0:
+
+- `cargo fmt --check` and `git diff --check`.
+- `cargo clippy --locked --all-targets -- -D warnings`.
+- `cargo test --locked`: 165 Scytify unit tests, 3 integration tests and 4 vendored OAuth tests, 172 total, zero failures.
+- `cargo build --release --locked` completed successfully. The installed Rust toolchain emits a nonfatal strip warning: `rust-objcopy` cannot find `libLLVM.dylib`. No profile or environment override was used; the release executable is produced.
+
+New regressions cover playlist search and non-owned playlists, followed-artist cursor paging past skipped rows, popular-song permission failures, stable duplicate sorting, keyboard playback at raw offsets, explicit shelf retry, macOS Command mapping and the current-device fallback. The offline frontend example compiles under the all-targets check. Existing dock-icon formatting and range-loop lint failures were fixed.
+
+These are automated results. The app was not installed, launched or used against Spotify during this implementation. Parent acceptance still needs narrow-window layout, row/action-sheet clicks, clipboard behavior, Command shortcuts, collaborator navigation, filtered 797-song browsing, endpoint availability on the real developer client, device display and VoiceOver. No OAuth scope, live library or device state was changed. The earlier platform measurements below are historical evidence.
+
+## Earlier build and automated checks
 
 Validated with Rust 1.98.0 on Fedora 44 KDE Plasma, Wayland, Ryzen 7 3700X,
 32 GB RAM, RTX 5060, and a 1920×1080 display running at 240 Hz.
@@ -71,6 +84,4 @@ also does not establish performance for a 50,000-track Spotify playlist.
 - Large playlist loading, unavailable tracks, long sessions, and network recovery.
 - Ten-minute hidden playback CPU/RAM measurements and visible scrolling tests.
 
-The bounded disk cache currently stores artwork. Full persistent library metadata
-and audio caching are not implemented. Discover Weekly and Smart Shuffle remain
-outside this first implementation, not simulated features.
+The bounded disk cache stores artwork and encrypted librespot audio. It does not provide user-managed downloads or a guaranteed offline library. Made for you can include Discover Weekly through the playback session; Smart Shuffle remains deferred.

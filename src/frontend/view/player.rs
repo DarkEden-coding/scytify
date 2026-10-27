@@ -173,18 +173,31 @@ impl Ui {
         // The left column is three tenths of the bar, minus the cover, the heart and gaps.
         let width: f32 =
             (self.window_size.width * 0.3 - ART - super::tracklist::LIKE_WIDTH - 52.0).max(80.0);
-        row![
-            self.cover(track.artwork_url(), ART, Shape::Cover),
-            column![
-                self.strong(self.fit_bold(&track.name, width, p.font_size.body)),
-                self.subdued(self.fit(&artist_names(&track.artists), width, p.font_size.small))
-                    .wrapping(Wrapping::None),
+        let album = track
+            .album
+            .as_ref()
+            .map(|album| Message::Navigate(Route::album(album)))
+            .unwrap_or_else(|| Message::TrackMenu(Box::new(track.clone())));
+        iced::widget::mouse_area(
+            row![
+                button(self.cover(track.artwork_url(), ART, Shape::Cover))
+                    .padding(0)
+                    .style(styles::link(p))
+                    .on_press(album.clone()),
+                column![
+                    button(self.strong(self.fit_bold(&track.name, width, p.font_size.body)))
+                        .padding(0)
+                        .style(styles::link(p))
+                        .on_press(album.clone()),
+                    self.artist_link(track, width),
+                ]
+                .spacing(4),
+                self.like_button(track),
             ]
-            .spacing(4),
-            self.like_button(track),
-        ]
-        .spacing(14)
-        .align_y(Alignment::Center)
+            .spacing(14)
+            .align_y(Alignment::Center),
+        )
+        .on_right_press(Message::TrackMenu(Box::new(track.clone())))
         .into()
     }
 

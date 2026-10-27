@@ -29,13 +29,19 @@ impl Ui {
         let columns: Columns = self.columns(album);
         let rows: Element<'a> = self.track_rows(&page.items, page.offset, data, &columns);
         if !self.track_hero() {
-            return column![self.section(&self.title), self.table_header(&columns), rows].into();
+            return column![
+                self.section(&self.title),
+                self.track_tools(page),
+                self.table_header(&columns),
+                rows
+            ]
+            .into();
         }
         let count: u64 = page.total.unwrap_or(page.items.len() as u64);
         let mut meta = row![].spacing(6).align_y(Alignment::Center);
         if album && let Some(artists) = page.items.first().and_then(|t| t.album.as_ref()) {
             meta = meta
-                .push(self.strong(artist_names(&artists.artists)))
+                .push(self.artist_links(&artists.artists, self.grid_width() * 0.5))
                 .push(self.label("•"));
         }
         let mut summary: String = format!("{count} songs");
@@ -76,6 +82,22 @@ impl Ui {
         if let Some(entry) = self.header_entry() {
             actions = actions.push(self.save_button(entry));
         }
+        let link = match &self.query {
+            Query::PlaylistTracks { playlist_id } => Some(format!(
+                "https://open.spotify.com/playlist/{}",
+                playlist_id.0
+            )),
+            Query::AlbumTracks { album_id } => {
+                Some(format!("https://open.spotify.com/album/{}", album_id.0))
+            }
+            _ => None,
+        };
+        if let Some(link) = link {
+            actions = actions.push(
+                self.control(self.label("Copy link"))
+                    .on_press(Message::CopyLink(link)),
+            );
+        }
         let actions = container(actions)
             .padding([0.0, CONTENT_PADDING])
             .height(ACTIONS_HEIGHT)
@@ -92,7 +114,61 @@ impl Ui {
             meta.into(),
             Some((actions.into(), ACTIONS_HEIGHT)),
         );
-        column![hero, self.table_header(&columns), rows].into()
+        column![
+            hero,
+            self.track_tools(page),
+            self.table_header(&columns),
+            rows
+        ]
+        .into()
+    }
+
+    pub(in crate::frontend) fn track_view_active(&self) -> bool {
+        !self.track_filter.trim().is_empty() || self.track_sort != track_filter::Sort::Source
+    }
+
+    fn track_tools<'a>(&'a self, page: &Page<Track>) -> Element<'a> {
+        let controls = row![
+            iced::widget::text_input("Find in loaded songs", &self.track_filter)
+                .font(self.palette.font())
+                .size(self.palette.font_size.small)
+                .padding([8.0, 12.0])
+                .style(styles::text_input(&self.palette))
+                .on_input(Message::TrackFilter)
+                .width(Length::Fill),
+            iced::widget::pick_list(
+                track_filter::Sort::ALL,
+                Some(self.track_sort),
+                Message::TrackSort
+            ),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+        let mut info = row![
+            self.subdued(format!(
+                "{} loaded · Playback in source order",
+                page.items.len()
+            ))
+            .size(self.palette.font_size.small)
+            .width(Length::Fill)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if page.has_more && page.items.len() < paging::MAX_LOADED_ITEMS {
+            let mut more = self.control(self.label(if self.more_pending.is_some() {
+                "Loading…"
+            } else {
+                "Load more"
+            }));
+            if self.more_pending.is_none() {
+                more = more.on_press(Message::TrackMore);
+            }
+            info = info.push(more);
+        }
+        container(column![controls, info].spacing(4))
+            .padding([8.0, CONTENT_PADDING])
+            .height(layout::TRACK_TOOLS_HEIGHT)
+            .into()
     }
 
     /// Virtualized rows for every track of the list, where `items` were loaded from source
@@ -104,6 +180,26 @@ impl Ui {
         data: &PageData,
         columns: &Columns,
     ) -> Element<'a> {
+        if self.track_view_active() {
+            let indices = track_filter::indices(items, &self.track_filter, self.track_sort);
+            let (start, end) = crate::frontend::layout::visible_rows(
+                indices.len(),
+                self.scroll - self.content_top(data),
+                self.main_size.height,
+                self.palette.shape.row_height,
+            );
+            let height = self.palette.shape.row_height;
+            let mut rows = column![space().height(start as f32 * height)];
+            for &index in &indices[start..end] {
+                rows =
+                    rows.push(self.track_row(items, first, index, first as usize + index, columns));
+            }
+            rows = rows.push(space().height((indices.len() - end) as f32 * height));
+            if indices.is_empty() {
+                rows = rows.push(self.subdued("No matching songs in the loaded section"));
+            }
+            return container(rows).padding([0.0, CONTENT_PADDING]).into();
+        }
         let (start, end) = self.visible_slots(data);
         let height: f32 = self.palette.shape.row_height;
         let mut rows = column![space().height(start as f32 * height)];
@@ -255,7 +351,7 @@ impl Ui {
                 .color(p.colors.accent)
                 .into()
         } else {
-            self.label((first + index as u64 + 1).to_string())
+            self.label((item.source_index.unwrap_or(first + index as u64) + 1).to_string())
                 .color(if current {
                     p.colors.accent
                 } else {
@@ -331,6 +427,7 @@ impl Ui {
                 .style(styles::track_row(p, hovered, selected)),
         )
         .on_press(Message::SelectRow(slot))
+        .on_right_press(Message::TrackMenu(Box::new(item.clone())))
         .on_enter(Message::HoverRow(slot, true))
         .on_exit(Message::HoverRow(slot, false));
         if item.playable {
@@ -363,21 +460,30 @@ impl Ui {
         .spacing(2)
     }
 
-    /// Subdued artist names; the first artist opens its page.
-    fn artist_link<'a>(&self, item: &'a Track, width: f32) -> Element<'a> {
-        let p: &Palette = &self.palette;
-        let names = text(self.fit(&artist_names(&item.artists), width, p.font_size.small))
-            .font(p.font())
-            .size(p.font_size.small)
-            .wrapping(Wrapping::None);
-        match item.artists.first() {
-            Some(artist) => button(names)
+    /// Each artist opens its own page, including collaborators.
+    pub(super) fn artist_link<'a>(&self, item: &'a Track, width: f32) -> Element<'a> {
+        self.artist_links(&item.artists, width)
+    }
+
+    pub(super) fn artist_links<'a>(&self, artists: &'a [Artist], width: f32) -> Element<'a> {
+        let p = &self.palette;
+        let mut links = row![].spacing(3);
+        let share = width / artists.len().max(1) as f32;
+        for (index, artist) in artists.iter().enumerate() {
+            if index > 0 {
+                links = links.push(self.subdued(",").size(p.font_size.small));
+            }
+            links = links.push(
+                button(
+                    self.subdued(self.fit(&artist.name, share, p.font_size.small))
+                        .wrapping(Wrapping::None),
+                )
                 .padding(0)
                 .style(styles::link(p))
-                .on_press(Message::Navigate(Route::artist(artist)))
-                .into(),
-            None => names.color(p.colors.text_subdued).into(),
+                .on_press(Message::Navigate(Route::artist(artist))),
+            );
         }
+        container(links).max_width(width.max(1.0)).clip(true).into()
     }
 
     /// Album name that opens the album page.

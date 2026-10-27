@@ -72,6 +72,21 @@ impl Ui {
                         meta.into(),
                         None,
                     ),
+                    container(if let Query::ArtistAlbums { artist_id } = &self.query {
+                        self.control(self.label("Popular songs"))
+                            .on_press(Message::Navigate(Route::browse(
+                                Query::ArtistTopTracks {
+                                    artist_id: artist_id.clone(),
+                                },
+                                format!("{} · Popular songs", self.title),
+                                self.route_artwork.clone(),
+                            )))
+                    } else {
+                        self.control(self.label("Popular songs"))
+                    })
+                    .height(layout::ARTIST_TOOLS_HEIGHT)
+                    .padding([0.0, CONTENT_PADDING])
+                    .align_y(Alignment::Center),
                     self.section("Albums"),
                     self.grid(&page.items, data, Shape::Cover, |item, grid| self
                         .album_card(item, grid)),
@@ -111,13 +126,22 @@ impl Ui {
         let all_albums = Message::Navigate(Route::browse(Query::SavedAlbums, "Saved albums", None));
         let all_playlists =
             Message::Navigate(Route::browse(Query::OwnPlaylists, "Your playlists", None));
+        let retry: Element<'_> = if self.shelf_failed || self.mixes_failed.is_some() {
+            self.control(self.label("Retry failed shelves"))
+                .on_press(Message::RetryShelves)
+                .into()
+        } else {
+            space().height(0).into()
+        };
         column![
             self.mixes_shelf(),
+            retry,
             self.shelf(
                 "Your playlists",
                 all_playlists,
                 &playlists.items,
-                (playlists.items.is_empty()).then_some("Playlists you create will appear here."),
+                (playlists.items.is_empty())
+                    .then_some("Playlists in your library will appear here."),
                 |item, grid| self.playlist_card(item, grid),
             ),
             self.shelf(
@@ -227,10 +251,15 @@ impl Ui {
             }
             Query::SearchArtists { .. }
             | Query::SearchAlbums { .. }
-            | Query::SearchTracks { .. } => ("No results".into(), "Try another search."),
+            | Query::SearchTracks { .. }
+            | Query::SearchPlaylists { .. } => ("No results".into(), "Try another search."),
             Query::LikedTracks => (
                 "Songs you like will appear here".into(),
                 "Save songs in Spotify by tapping the heart.",
+            ),
+            Query::FollowedArtists => (
+                "Artists you follow will appear here".into(),
+                "This destination requires Spotify's user-follow-read permission.",
             ),
             Query::SavedAlbums => (
                 "Albums you save will appear here".into(),
@@ -380,7 +409,7 @@ impl Ui {
             .into()
     }
 
-    fn playlist_card<'a>(&'a self, item: &'a Playlist, grid: Grid) -> Element<'a> {
+    pub(super) fn playlist_card<'a>(&'a self, item: &'a Playlist, grid: Grid) -> Element<'a> {
         let subtitle: String = match item.track_count {
             Some(n) => format!("Playlist · {n} tracks"),
             None => "Playlist".into(),

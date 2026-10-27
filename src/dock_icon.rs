@@ -57,16 +57,28 @@ fn bar_lengths(state: IconState, seconds: f32) -> [Option<f32>; 5] {
 type Premultiplied = [f32; 4];
 type Stops<'a> = &'a [(f32, [f32; 4])];
 
-const TILE: Stops = &[(0.0, [0.204, 0.208, 0.227, 1.0]), (1.0, [0.090, 0.094, 0.106, 1.0])];
+const TILE: Stops = &[
+    (0.0, [0.204, 0.208, 0.227, 1.0]),
+    (1.0, [0.090, 0.094, 0.106, 1.0]),
+];
 const RIM: Stops = &[
     (0.0, [1.0, 1.0, 1.0, 0.18]),
     (0.5, [1.0, 1.0, 1.0, 0.0]),
     (1.0, [0.0, 0.0, 0.0, 0.45]),
 ];
-const WELL: Stops = &[(0.0, [0.071, 0.075, 0.086, 1.0]), (1.0, [0.169, 0.173, 0.192, 1.0])];
+const WELL: Stops = &[
+    (0.0, [0.071, 0.075, 0.086, 1.0]),
+    (1.0, [0.169, 0.173, 0.192, 1.0]),
+];
 const WELL_RIM: Stops = &[(0.0, [0.0, 0.0, 0.0, 0.6]), (1.0, [1.0, 1.0, 1.0, 0.12])];
-const BAR_LIVE: Stops = &[(0.0, [0.235, 0.941, 0.486, 1.0]), (1.0, [0.090, 0.698, 0.298, 1.0])];
-const BAR_CLOSED: Stops = &[(0.0, [0.420, 0.431, 0.455, 1.0]), (1.0, [0.275, 0.282, 0.302, 1.0])];
+const BAR_LIVE: Stops = &[
+    (0.0, [0.235, 0.941, 0.486, 1.0]),
+    (1.0, [0.090, 0.698, 0.298, 1.0]),
+];
+const BAR_CLOSED: Stops = &[
+    (0.0, [0.420, 0.431, 0.455, 1.0]),
+    (1.0, [0.275, 0.282, 0.302, 1.0]),
+];
 const GLOW_RGB: [f32; 3] = [0.118, 0.843, 0.376];
 
 fn gradient(stops: Stops, t: f32) -> [f32; 4] {
@@ -91,7 +103,10 @@ fn over(dst: &mut Premultiplied, rgb: [f32; 3], alpha: f32) {
 }
 
 fn round_rect_distance(x: f32, y: f32, half: f32, radius: f32) -> f32 {
-    let (qx, qy) = ((x - CENTER).abs() - half + radius, (y - CENTER).abs() - half + radius);
+    let (qx, qy) = (
+        (x - CENTER).abs() - half + radius,
+        (y - CENTER).abs() - half + radius,
+    );
     qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
 }
 
@@ -169,12 +184,22 @@ impl DockIconRenderer {
             let c = gradient(stops, t);
             over(out, [c[0], c[1], c[2]], c[3] * cover);
         };
-        paint(&mut out, TILE, diagonal, coverage(round_rect_distance(x, y, 256.0, 116.0), pixel));
+        paint(
+            &mut out,
+            TILE,
+            diagonal,
+            coverage(round_rect_distance(x, y, 256.0, 116.0), pixel),
+        );
         let rim = round_rect_distance(x, y, 254.0, 114.0).abs() - 2.0;
         paint(&mut out, RIM, diagonal, coverage(rim, pixel));
         // The well gradients span the disc's bounding box, 68..444 on both axes.
         let well_t = ((x - 68.0) + (y - 68.0)) / (2.0 * 376.0);
-        paint(&mut out, WELL, well_t, coverage(circle_distance(x, y, 188.0), pixel));
+        paint(
+            &mut out,
+            WELL,
+            well_t,
+            coverage(circle_distance(x, y, 188.0), pixel),
+        );
         let well_rim = circle_distance(x, y, 187.0).abs() - 1.5;
         paint(&mut out, WELL_RIM, well_t, coverage(well_rim, pixel));
         out
@@ -192,7 +217,9 @@ impl DockIconRenderer {
         let centres = || (0..self.size).map(|k| self.design(k));
         let columns: Vec<[f32; 5]> = centres()
             .map(|x| {
-                std::array::from_fn(|i| blurred_span(BAR_X[i] - BAR_RADIUS, BAR_X[i] + BAR_RADIUS, x))
+                std::array::from_fn(|i| {
+                    blurred_span(BAR_X[i] - BAR_RADIUS, BAR_X[i] + BAR_RADIUS, x)
+                })
             })
             .collect();
         let rows: Vec<[f32; 5]> = centres()
@@ -208,13 +235,13 @@ impl DockIconRenderer {
             .collect();
 
         let mut pixels = Vec::with_capacity(size * size * 4);
-        for row in 0..size {
+        for (row, row_blur) in rows.iter().enumerate() {
             let y = self.design(row as u32);
-            for col in 0..size {
+            for (col, col_blur) in columns.iter().enumerate() {
                 let x = self.design(col as u32);
                 let mut px = self.background[row * size + col];
                 if glow && px[3] > 0.0 {
-                    let spread: f32 = (0..5).map(|i| columns[col][i] * rows[row][i]).sum();
+                    let spread: f32 = (0..5).map(|i| col_blur[i] * row_blur[i]).sum();
                     over(&mut px, GLOW_RGB, GLOW_OPACITY * spread.min(1.0));
                 }
                 let mut bar = 0.0_f32;
@@ -263,7 +290,10 @@ mod tests {
         assert_eq!(paused[0], None);
         assert_eq!(paused[4], None);
         for (a, b) in [(1, 2), (2, 3)] {
-            assert_eq!(top(closed, a) - top(closed, b), top(paused, a) - top(paused, b));
+            assert_eq!(
+                top(closed, a) - top(closed, b),
+                top(paused, a) - top(paused, b)
+            );
         }
         assert!(paused[2] > paused[1] && paused[2] > paused[3]);
     }
@@ -293,7 +323,10 @@ mod tests {
         assert_eq!(pixel(&closed, 64, 8)[3], 255);
         // Outer bars exist only when closed; the centre bar is grey when closed, green otherwise.
         let outer = (148 / 4, 128 / 2);
-        assert_ne!(pixel(&closed, outer.0, outer.1), pixel(&paused, outer.0, outer.1));
+        assert_ne!(
+            pixel(&closed, outer.0, outer.1),
+            pixel(&paused, outer.0, outer.1)
+        );
         let (c, p) = (pixel(&closed, 64, 64), pixel(&paused, 64, 64));
         assert!(c[1].abs_diff(c[0]) < 12);
         assert!(p[1] > p[0] + 60);

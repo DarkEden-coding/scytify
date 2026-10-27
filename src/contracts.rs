@@ -29,7 +29,7 @@ pub struct Page<T> {
     pub items: Vec<T>,
     pub has_more: bool,
     /// Upstream offset after the last raw row this page consumed. The backend drops rows
-    /// (local files, episodes, playlists owned by others), so this can exceed
+    /// (local files, episodes, malformed items), so this can exceed
     /// `offset + items.len()`; the following page starts here.
     pub next_offset: u64,
 }
@@ -54,10 +54,19 @@ pub enum Query {
     SearchTracks {
         text: String,
     },
+    SearchPlaylists {
+        text: String,
+    },
     /// The user's Liked Songs, newest first. Requires the `user-library-read` scope.
     LikedTracks,
     /// The user's saved albums, newest first. Requires the `user-library-read` scope.
     SavedAlbums,
+    /// Artists followed by the user. Requires the `user-follow-read` scope.
+    FollowedArtists,
+    /// A bounded popular-song list, when Spotify grants this endpoint to the client.
+    ArtistTopTracks {
+        artist_id: SpotifyId,
+    },
     ArtistAlbums {
         artist_id: SpotifyId,
     },
@@ -91,6 +100,7 @@ pub struct SearchResults {
     pub artists: Vec<Artist>,
     pub albums: Vec<Album>,
     pub tracks: Vec<Track>,
+    pub playlists: Vec<Playlist>,
 }
 
 /// Something the user can keep in Your Library: a liked song, a saved album or a followed

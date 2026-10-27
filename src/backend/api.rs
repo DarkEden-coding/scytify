@@ -436,6 +436,28 @@ impl Api {
         if p.limit == 0 || p.limit > crate::contracts::MAX_PAGE_SIZE {
             return Err(err(ErrorKind::InvalidInput, "invalid page size"));
         }
+        if let Query::ArtistTopTracks { artist_id } = q {
+            let v = self.get_json(token, &format!("artists/{}/top-tracks", valid_id(artist_id)?)).await.map_err(|e| {
+                if matches!(e.kind, ErrorKind::Permission | ErrorKind::Unavailable) {
+                    err(e.kind, "Spotify did not grant access to artist popular songs for this client/account. Discography remains available.")
+                } else { e }
+            })?;
+            let raw = v
+                .get("tracks")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| err(ErrorKind::Network, "Spotify omitted artist popular songs"))?;
+            let items: Vec<_> = raw.iter().filter_map(parse_track).collect();
+            return Ok(PageData::Tracks(Page {
+                offset: 0,
+                total: Some(items.len() as u64),
+                next_offset: items.len() as u64,
+                items,
+                has_more: false,
+            }));
+        }
+        if matches!(q, Query::FollowedArtists) {
+            return self.followed_artists(token, p).await;
+        }
         let step = upstream_page_size(q);
         let chunks = (0..p.limit)
             .step_by(usize::from(step))
@@ -465,6 +487,70 @@ impl Api {
         }
         Ok(data)
     }
+    /// Spotify follows use cursors. Walk from the beginning to translate the requested
+    /// raw offset, then collect one page without assuming a stable cursor cache.
+    async fn followed_artists(&self, token: &str, p: PageRequest) -> Result<PageData, AppError> {
+        let mut offset = 0u64;
+        let mut after: Option<String> = None;
+        let mut items = Vec::new();
+        loop {
+            let remaining = if offset < p.offset {
+                p.offset - offset
+            } else {
+                u64::from(p.limit) - (offset - p.offset)
+            };
+            let limit = remaining.min(SOURCE_PAGE);
+            let mut path = format!("me/following?type=artist&limit={limit}");
+            if let Some(cursor) = &after {
+                path.push_str("&after=");
+                path.extend(url::form_urlencoded::byte_serialize(cursor.as_bytes()));
+            }
+            let v = self.get_json(token, &path).await.map_err(|e| {
+                if e.kind == ErrorKind::Permission {
+                    err(
+                        ErrorKind::Permission,
+                        "Spotify denied followed artists. This client does not request user-follow-read; account permission changes are not enabled.",
+                    )
+                } else {
+                    e
+                }
+            })?;
+            let page = v
+                .get("artists")
+                .ok_or_else(|| err(ErrorKind::Network, "Spotify omitted followed artists"))?;
+            let raw = page
+                .get("items")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| err(ErrorKind::Network, "Spotify page omitted items"))?;
+            if offset >= p.offset {
+                items.extend(raw.iter().filter_map(parse_artist));
+            }
+            offset += raw.len() as u64;
+            let has_more = page.get("next").and_then(|v| v.as_str()).is_some();
+            let total = page.get("total").and_then(|v| v.as_u64());
+            if !has_more || offset >= p.offset + u64::from(p.limit) {
+                return Ok(PageData::Artists(Page {
+                    offset: p.offset,
+                    total,
+                    items,
+                    has_more,
+                    next_offset: offset,
+                }));
+            }
+            let cursor = page
+                .pointer("/cursors/after")
+                .and_then(|v| v.as_str())
+                .filter(|cursor| !cursor.is_empty() && after.as_deref() != Some(*cursor))
+                .ok_or_else(|| err(ErrorKind::Network, "Spotify omitted the next artist cursor"))?;
+            if raw.is_empty() {
+                return Err(err(
+                    ErrorKind::Network,
+                    "Spotify returned an empty followed artist page",
+                ));
+            }
+            after = Some(cursor.to_owned());
+        }
+    }
     /// Fetches one upstream page of at most one request's size.
     async fn fetch_upstream(
         &self,
@@ -485,7 +571,7 @@ impl Api {
             Query::LikedTracks => ("me/tracks".into(), Kind::Tracks, page_limit),
             Query::SavedAlbums => ("me/albums".into(), Kind::Albums, page_limit),
             Query::Search { text } => {
-                let path = search_path(text, "artist,album,track")?;
+                let path = search_path(text, "artist,album,track,playlist")?;
                 let v = self
                     .get_json(token, &format!("{path}&limit={SEARCH_LIMIT}"))
                     .await?;
@@ -499,6 +585,20 @@ impl Api {
             }
             Query::SearchTracks { text } => {
                 (search_path(text, "track")?, Kind::Tracks, search_limit)
+            }
+            Query::SearchPlaylists { text } => (
+                search_path(text, "playlist")?,
+                Kind::Playlists,
+                search_limit,
+            ),
+            Query::ArtistTopTracks { .. } => {
+                return Err(err(
+                    ErrorKind::InvalidInput,
+                    "artist popular songs are not paged",
+                ));
+            }
+            Query::FollowedArtists => {
+                return Err(err(ErrorKind::InvalidInput, "followed artists use cursors"));
             }
             Query::ArtistAlbums { artist_id } => (
                 format!("artists/{}/albums", valid_id(artist_id)?),
@@ -575,6 +675,10 @@ pub(super) fn check_status(r: &reqwest::Response) -> Result<(), AppError> {
     }
     match r.status().as_u16() {
         401 => Err(err(ErrorKind::Authentication, "authorization expired")),
+        404 => Err(err(
+            ErrorKind::Unavailable,
+            "Spotify item or endpoint is unavailable for this account or app mode",
+        )),
         403 => Err(err(
             ErrorKind::Permission,
             "Spotify denied this endpoint for this account or app mode",
@@ -617,6 +721,7 @@ fn search_root(q: &Query) -> Option<&'static str> {
         Query::SearchArtists { .. } => Some("artists"),
         Query::SearchAlbums { .. } => Some("albums"),
         Query::SearchTracks { .. } => Some("tracks"),
+        Query::SearchPlaylists { .. } => Some("playlists"),
         _ => None,
     }
 }
@@ -676,7 +781,7 @@ fn map_page(
     kind: Kind,
     v: serde_json::Value,
     offset: u64,
-    user: &str,
+    _user: &str,
 ) -> Result<PageData, AppError> {
     let total = v.get("total").and_then(|x| x.as_u64());
     let has_more = v.get("next").and_then(|x| x.as_str()).is_some();
@@ -699,14 +804,7 @@ fn map_page(
     }
     let items = raw.iter().map(|x| unwrap_item(x, kind));
     Ok(match kind {
-        // Development mode only lists the items of the user's own playlists. Followed
-        // Spotify playlists stay too: the playback session reads those.
-        Kind::Playlists => PageData::Playlists(page!(
-            items
-                .filter_map(parse_playlist)
-                .filter(|x| x.owner_id == user || super::discover::is_spotify_owned(&x.id))
-                .collect()
-        )),
+        Kind::Playlists => PageData::Playlists(page!(items.filter_map(parse_playlist).collect())),
         // Skipped rows (local files, episodes) keep their raw position on the survivors.
         Kind::Tracks => PageData::Tracks(page!(
             items
@@ -739,6 +837,7 @@ fn parse_search(v: &serde_json::Value) -> SearchResults {
         artists: top(v, "artists", parse_artist),
         albums: top(v, "albums", parse_album),
         tracks: top(v, "tracks", parse_track),
+        playlists: top(v, "playlists", parse_playlist),
     }
 }
 
@@ -884,6 +983,106 @@ pub(crate) fn err(kind: ErrorKind, msg: &str) -> AppError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    async fn mock_catalog(
+        responses: Vec<(&'static str, &'static str, serde_json::Value)>,
+    ) -> (Api, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut api = Api::new().unwrap();
+        api.catalog_base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        api.http = super::super::http_client()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let server = tokio::spawn(async move {
+            for (path, status, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buffer[..n]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert_eq!(request.split_whitespace().nth(1), Some(path));
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (api, server)
+    }
+
+    #[tokio::test]
+    async fn artist_popular_tracks_report_capability_failure_then_load_without_paging() {
+        let (api, server) = mock_catalog(vec![
+            (
+                "/v1/artists/0123456789012345678901/top-tracks",
+                "403 Forbidden",
+                json!({"error": {"status":403}}),
+            ),
+            (
+                "/v1/artists/0123456789012345678901/top-tracks",
+                "200 OK",
+                json!({"tracks": [null, {"id":"song", "name":"Popular", "duration_ms":1000}]}),
+            ),
+        ])
+        .await;
+        let query = Query::ArtistTopTracks {
+            artist_id: SpotifyId("0123456789012345678901".into()),
+        };
+        let page = PageRequest {
+            offset: 0,
+            limit: 100,
+        };
+        let error = api.fetch("test", "me", &query, page).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Permission);
+        assert!(error.message.contains("Discography remains available"));
+        let PageData::Tracks(page) = api.fetch("test", "me", &query, page).await.unwrap() else {
+            panic!("tracks expected")
+        };
+        assert_eq!(page.items[0].name, "Popular");
+        assert_eq!(
+            (page.next_offset, page.total, page.has_more),
+            (1, Some(1), false)
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn followed_artist_cursors_preserve_raw_offsets_after_skipped_rows() {
+        let (api, server) = mock_catalog(vec![
+            ("/v1/me/following?type=artist&limit=1", "200 OK", json!({"artists":{"items":[{"id":"a", "name":"A"}], "next":"next", "total":3,"cursors":{"after":"a"}}})),
+            ("/v1/me/following?type=artist&limit=2&after=a", "200 OK", json!({"artists":{"items":[null,{"id":"b", "name":"B"}], "next":null,"total":3}})),
+        ]).await;
+        let PageData::Artists(page) = api
+            .fetch(
+                "test",
+                "me",
+                &Query::FollowedArtists,
+                PageRequest {
+                    offset: 1,
+                    limit: 2,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("artists expected")
+        };
+        assert_eq!(
+            (page.offset, page.next_offset, page.has_more),
+            (1, 3, false)
+        );
+        assert_eq!(page.items[0].id.0, "b");
+        server.await.unwrap();
+    }
 
     /// Exercise the real HTTP fetch and page assembly against the endpoint's 10-item cap.
     #[tokio::test]
@@ -1189,7 +1388,7 @@ mod tests {
         let PageData::Playlists(p) = map_page(Kind::Playlists, playlists, 50, "me").unwrap() else {
             panic!("expected playlists")
         };
-        assert_eq!((p.items.len(), p.next_offset), (1, 53));
+        assert_eq!((p.items.len(), p.next_offset), (3, 53));
         // A followed Spotify playlist is readable over the playback session, so it stays.
         let followed = json!({"items": [
             {"id": "37i9dQZF1E37fa3zdWtvQY", "name": "Daily Mix", "owner": {"id": "spotify"}, "snapshot_id": "s"}
@@ -1256,12 +1455,15 @@ mod tests {
         let v = json!({
             "artists": {"items": [null, {"id": "a1", "name": "Someone"}]},
             "albums": {"items": [{"id": "al1", "name": "Record", "album_type": "album"}]},
-            "tracks": {"items": tracks}
+            "tracks": {"items": tracks},
+            "playlists": {"items": [null, {"id": "p1", "name": "Mix", "owner": {"id": "other"}}]}
         });
         let r = parse_search(&v);
         assert_eq!(r.artists.len(), 1);
         assert_eq!(r.albums[0].id.0, "al1");
         assert_eq!(r.tracks.len(), SEARCH_LIMIT);
+        assert_eq!(r.playlists.len(), 1);
+        assert_eq!(r.playlists[0].owner_id, "other");
         assert!(parse_search(&json!({})).tracks.is_empty());
     }
 
@@ -1279,6 +1481,13 @@ mod tests {
             "search?q=a+b%26c&type=artist,album,track"
         );
         assert!(search_path("  ", "track").is_err());
+        let q = Query::SearchPlaylists { text: "x".into() };
+        let root = json!({"items": [null, {"id": "p1", "name": "Mix", "owner": {"id": "other"}}], "next": "more", "total": 5});
+        assert_eq!(search_root(&q), Some("playlists"));
+        let PageData::Playlists(p) = map_page(Kind::Playlists, root, 10, "me").unwrap() else {
+            panic!("expected playlists")
+        };
+        assert_eq!((p.items.len(), p.next_offset, p.has_more), (1, 12, true));
     }
 
     #[test]

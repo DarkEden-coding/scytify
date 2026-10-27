@@ -20,8 +20,14 @@ impl IconSink for DockIcon {
     fn show(&mut self, icon: Rgba) {
         // Encoding happens here, off the main thread; only the AppKit calls hop over.
         let mut png = Vec::new();
-        let encoded = PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::NoFilter)
-            .write_image(&icon.pixels, icon.width, icon.height, ExtendedColorType::Rgba8);
+        let encoded =
+            PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::NoFilter)
+                .write_image(
+                    &icon.pixels,
+                    icon.width,
+                    icon.height,
+                    ExtendedColorType::Rgba8,
+                );
         if let Err(error) = encoded {
             log::warn!("Dock icon frame not encoded: {error}");
             return;

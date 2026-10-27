@@ -125,15 +125,19 @@ impl Ui {
         let mut cells = row![
             self.cover(track.artwork_url(), THUMB, Shape::Cover),
             column![
-                self.label(self.fit(&track.name, width, p.font_size.body))
-                    .wrapping(Wrapping::None)
-                    .color(if current {
-                        p.colors.accent
-                    } else {
-                        p.colors.text
-                    }),
-                self.subdued(self.fit(&artist_names(&track.artists), width, p.font_size.small))
-                    .wrapping(Wrapping::None),
+                button(
+                    self.label(self.fit(&track.name, width, p.font_size.body))
+                        .wrapping(Wrapping::None)
+                        .color(if current {
+                            p.colors.accent
+                        } else {
+                            p.colors.text
+                        })
+                )
+                .padding(0)
+                .style(styles::link(p))
+                .on_press(Message::TrackMenu(Box::new(track.clone()))),
+                self.artist_link(track, width),
             ]
             .spacing(2)
             .width(Length::Fill),
