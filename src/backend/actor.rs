@@ -1686,6 +1686,8 @@ fn validate_artwork_url(u: &url::Url) -> Result<(), AppError> {
         || u.port().is_some()
         || !(host == "i.scdn.co"
             || host.ends_with(".scdn.co")
+            || host == "image-cdn-ak.spotifycdn.com"
+            || host == "image-cdn-fa.spotifycdn.com"
             || super::discover::MIX_ART_HOSTS.contains(&host))
     {
         Err(safe(ErrorKind::InvalidInput, "artwork host is not allowed"))
@@ -1875,6 +1877,8 @@ mod regression_tests {
             "https://i.scdn.co.evil.test/a",
             "https://i.scdn.co:444/a",
             "http://i.scdn.co/a",
+            "https://image-cdn-ak.spotifycdn.com.evil.test/a",
+            "https://image-cdn-fa.spotifycdn.com:444/a",
         ] {
             assert!(validate_artwork_url(&url::Url::parse(raw).unwrap()).is_err());
         }
@@ -1882,7 +1886,13 @@ mod regression_tests {
             validate_artwork_url(
                 &url::Url::parse("https://image-cdn-ak.spotifycdn.com/a").unwrap()
             )
-            .is_err()
+            .is_ok()
+        );
+        assert!(
+            validate_artwork_url(
+                &url::Url::parse("https://image-cdn-fa.spotifycdn.com/a").unwrap()
+            )
+            .is_ok()
         );
         assert!(validate_artwork_url(&url::Url::parse("https://i.scdn.co/a").unwrap()).is_ok());
         assert!(

@@ -4,7 +4,7 @@
 
 ## Desktop parity update, 2026-10-27
 
-- Library navigation includes Saved albums and Followed artists. Playlist listings retain other owners' playlists returned by Spotify. Followed-artist permission failures remain visible; this change adds no OAuth scopes.
+- Library navigation includes Saved albums and Followed artists. Playlist listings retain other owners' playlists returned by Spotify. Followed-artist permission failures explain that older sign-ins need renewed consent for the `user-follow-read` permission.
 - Search includes playlist results, artwork and a paged Show all route. Artist discography links to a bounded Popular songs page. Endpoint denial is shown as a page error with Retry and Back navigation.
 - Track pages filter and sort the loaded section using original item indices (`track_filter.rs`). View sorting is stable for duplicate occurrences. Every playback offset and displayed row number uses the track's raw source position. Automatic viewport filling pauses while a filter/sort is active; Load more appends within the existing working-set bound. Clear the filter and choose Custom order to resume normal windowed browsing.
 - Up/Down selects loaded songs on track pages and scrolls the selection into view; Enter plays it. Text fields keep their own keyboard input. Replacing or prepending a source window clears selection. Multi-selection and selected queue occurrences remain deferred.

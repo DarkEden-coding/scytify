@@ -4,7 +4,7 @@
 
 `OwnPlaylists` keeps its contract name for compatibility but now returns all parseable playlists from `me/playlists`, including other owners. Search requests `artist,album,track,playlist`; `SearchResults.playlists` and paged `SearchPlaylists` use the same 10-result per-type limit. Null rows are skipped while raw continuation offsets remain intact.
 
-`FollowedArtists` translates the cursor-based `me/following?type=artist` response into an offset page by walking cursors from the beginning. It validates cursor progress and advances past skipped raw rows. This can require multiple requests for distant pages. The existing OAuth scope list is unchanged and does not request `user-follow-read`; a denial explains that limitation rather than asking the user to repeat an ineffective sign-in.
+`FollowedArtists` translates the cursor-based `me/following?type=artist` response into an offset page by walking cursors from the beginning. It validates cursor progress and advances past skipped raw rows. This can require multiple requests for distant pages. New sign-ins request `user-follow-read`; an older token needs user-initiated sign-out and sign-in to grant the additional read permission. No consent runs automatically.
 
 `ArtistTopTracks` requests `artists/{id}/top-tracks` once, returns a bounded non-paged track list, and reports Spotify permission/unavailable responses explicitly. Its rows play through the existing standalone track source; there is no new artist-context playback contract. HTTP 404 is classified as Unavailable. No artist-follow writes, playlist-edit actions or queue-jump contract were added.
 
@@ -144,7 +144,7 @@ transfer or queue edit, restart restoration is limited to the available preview;
 the live Connect queue itself remains owned by Spirc.
 
 Web API OAuth scopes are `playlist-read-private playlist-read-collaborative user-read-private
-user-library-read user-library-modify playlist-modify-public user-read-recently-played streaming user-read-playback-state user-modify-playback-state
+user-library-read user-library-modify playlist-modify-public user-follow-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state
 user-read-currently-playing`. Tokens from earlier versions must be replaced by
 signing out and signing in again. Library and playback 403 responses return a
 Permission error with reauthorization instructions. Premium and developer-app

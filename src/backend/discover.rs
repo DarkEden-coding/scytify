@@ -202,12 +202,7 @@ pub(super) async fn playlist_tracks(
     playlist_id: &SpotifyId,
 ) -> Result<Vec<Track>, AppError> {
     let ids = context_tracks(session, &format!("spotify:playlist:{}", playlist_id.0)).await?;
-    let mut tracks = hydrate(session, &ids).await;
-    // Rows keep their raw position so Play starts the context at the right track.
-    for track in &mut tracks {
-        track.source_index = ids.iter().position(|id| *id == track.id).map(|i| i as u64);
-    }
-    Ok(tracks)
+    Ok(hydrate_positioned(session, &ids).await)
 }
 
 /// The account's Liked Songs, in one request.
@@ -332,20 +327,46 @@ async fn station(session: &Session, seed: &str) -> Result<Vec<SpotifyId>, AppErr
 
 /// Full track metadata in the order given; tracks Spotify cannot describe are left out.
 pub(super) async fn hydrate(session: &Session, ids: &[SpotifyId]) -> Vec<Track> {
+    let mut tracks = hydrate_positioned(session, ids).await;
+    // Recommendations and standalone metadata have no collection position.
+    for track in &mut tracks {
+        track.source_index = None;
+    }
+    tracks
+}
+
+/// Assign positions before failed metadata is dropped so repeated IDs remain separate
+/// occurrences and unavailable metadata never shifts the surviving playback offsets.
+async fn hydrate_positioned(session: &Session, ids: &[SpotifyId]) -> Vec<Track> {
     // Owned IDs and session handles keep the spawned job's future `Send`.
-    futures_util::stream::iter(ids.to_vec())
-        .map(|id| {
+    let rows = futures_util::stream::iter(ids.iter().cloned().enumerate())
+        .map(|(index, id)| {
             let session = session.clone();
             async move {
-                let uri = SpotifyUri::from_uri(&format!("spotify:track:{}", id.0)).ok()?;
-                let track = librespot_metadata::Track::get(&session, &uri).await.ok()?;
-                convert(&track)
+                let track = async {
+                    let uri = SpotifyUri::from_uri(&format!("spotify:track:{}", id.0)).ok()?;
+                    let track = librespot_metadata::Track::get(&session, &uri).await.ok()?;
+                    convert(&track)
+                }
+                .await;
+                (index, track)
             }
         })
         .buffered(METADATA_CONCURRENCY)
-        .filter_map(std::future::ready)
+        .collect::<Vec<_>>()
+        .await;
+    positioned_tracks(rows)
+}
+
+fn positioned_tracks(rows: impl IntoIterator<Item = (usize, Option<Track>)>) -> Vec<Track> {
+    rows.into_iter()
+        .filter_map(|(index, track)| {
+            track.map(|mut track| {
+                track.source_index = Some(index as u64);
+                track
+            })
+        })
         .collect()
-        .await
 }
 
 fn convert(track: &librespot_metadata::Track) -> Option<Track> {
@@ -538,6 +559,26 @@ mod tests {
             listening.observe(&player, 25_000),
             Some(SpotifyId("short".into()))
         );
+    }
+
+    #[test]
+    fn playlist_metadata_preserves_duplicate_occurrences_and_failed_rows() {
+        let rows = vec![
+            (0, Some(track("duplicate", 1000))),
+            (1, None),
+            (2, Some(track("duplicate", 1000))),
+            (3, Some(track("other", 1000))),
+        ];
+        let page = page(
+            positioned_tracks(rows),
+            PageRequest {
+                offset: 1,
+                limit: 2,
+            },
+        );
+        assert_eq!(page.items[0].id.0, "duplicate");
+        assert_eq!(page.items[0].source_index, Some(2));
+        assert_eq!(page.items[1].source_index, Some(3));
     }
 
     #[test]

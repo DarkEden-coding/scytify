@@ -509,7 +509,7 @@ impl Api {
                 if e.kind == ErrorKind::Permission {
                     err(
                         ErrorKind::Permission,
-                        "Spotify denied followed artists. This client does not request user-follow-read; account permission changes are not enabled.",
+                        "Followed artists needs Spotify permission. Sign out in Settings and sign in again to grant access to artists you follow. Spotify may also restrict access for developer apps.",
                     )
                 } else {
                     e
