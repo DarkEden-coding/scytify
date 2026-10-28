@@ -9,6 +9,7 @@ mod search;
 mod settings;
 mod sidebar;
 mod topbar;
+mod track_actions;
 mod tracklist;
 
 use super::icons::{self, Icon, glyph};
@@ -80,6 +81,9 @@ impl Ui {
         }
         if self.devices {
             layers = layers.push(self.devices_overlay());
+        }
+        if let Some(track) = &self.track_menu {
+            layers = layers.push(self.track_actions(track));
         }
         self.with_resize_grips(layers.into())
     }
@@ -212,7 +216,38 @@ impl Ui {
         active: bool,
         message: Message,
     ) -> iced::widget::Button<'a, Message> {
-        button(glyph(&self.palette, which, size))
+        let hint = match which {
+            Icon::Play => "Play",
+            Icon::Pause => "Pause",
+            Icon::SkipBack => "Previous song",
+            Icon::SkipForward => "Next song",
+            Icon::Shuffle => "Toggle shuffle",
+            Icon::Repeat | Icon::RepeatOne => "Cycle repeat mode",
+            Icon::Volume | Icon::VolumeLow | Icon::VolumeMuted => "Mute or restore volume",
+            Icon::ListMusic => "Open or close queue",
+            Icon::ListPlus => "Add to queue",
+            Icon::ListEnd => "Play next",
+            Icon::Library => "Your library",
+            Icon::Search => "Search",
+            Icon::Settings => "Settings",
+            Icon::Home => "Home",
+            Icon::ChevronLeft => "Back",
+            Icon::ChevronRight => "Forward",
+            Icon::Close => "Close or remove",
+            Icon::LogOut => "Sign out",
+            Icon::Power => "Quit Scytify",
+            Icon::Heart => "Like song",
+            Icon::CirclePlus => "Save to library",
+            Icon::Check => "Saved to library",
+            Icon::SearchX => "Clear search",
+            Icon::Minimize => "Minimize",
+            Icon::Maximize => "Maximize",
+            Icon::Restore => "Restore window",
+            Icon::Devices => "Choose playback device",
+            Icon::Lyrics => "Open or close lyrics",
+            _ => "Open details",
+        };
+        button(self.tip(glyph(&self.palette, which, size), hint))
             .padding(6)
             .style(styles::icon_button(&self.palette, active))
             .on_press(message)
@@ -299,7 +334,11 @@ impl Ui {
     }
 
     /// Leading icon and label for a control; just the label for text-icon themes.
-    pub(super) fn icon_label<'a>(&self, which: Icon, label: &'a str) -> Element<'a> {
+    pub(super) fn icon_label<'a>(
+        &self,
+        which: Icon,
+        label: impl text::IntoFragment<'a>,
+    ) -> Element<'a> {
         let mut content = row![].spacing(8).align_y(Alignment::Center);
         if self.palette.icons == Icons::Lucide {
             content = content.push(icons::icon(which, 16.0));

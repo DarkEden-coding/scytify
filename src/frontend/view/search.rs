@@ -63,6 +63,20 @@ impl Ui {
                 |item, grid| self.album_card(item, grid),
             ));
         }
+        if !results.playlists.is_empty() {
+            page = page.push(self.shelf(
+                "Playlists",
+                show_all(
+                    Query::SearchPlaylists {
+                        text: text.to_owned(),
+                    },
+                    "Playlists",
+                ),
+                &results.playlists,
+                None,
+                |item, grid| self.playlist_card(item, grid),
+            ));
+        }
         page.into()
     }
 
@@ -70,7 +84,7 @@ impl Ui {
     pub(super) fn search_start(&self) -> Element<'_> {
         self.centered_notice(
             Icon::Search,
-            "Search for artists, albums, or songs".into(),
+            "Search for artists, albums, songs, or playlists".into(),
             "Start typing in the search box above.",
         )
     }
@@ -252,6 +266,7 @@ impl Ui {
                     .style(styles::track_row(p, hovered, selected)),
             )
             .on_press(Message::SelectRow(index))
+            .on_right_press(Message::TrackMenu(Box::new(item.clone())))
             .on_enter(Message::HoverRow(index, true))
             .on_exit(Message::HoverRow(index, false));
             if item.playable {

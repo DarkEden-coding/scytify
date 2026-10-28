@@ -213,6 +213,23 @@ impl Ui {
                 _ => &[],
             };
             items.extend(tracks.iter().map(|t| LibraryItem::Track(t.id.clone())));
+            if let PageData::Tracks(page) = data
+                && self.track_view_active()
+            {
+                let indices =
+                    track_filter::indices(&page.items, &self.track_filter, self.track_sort);
+                let (start, end) = layout::visible_rows(
+                    indices.len(),
+                    self.scroll - self.content_top(data),
+                    self.main_size.height,
+                    self.palette.shape.row_height,
+                );
+                items.extend(
+                    indices[start..end]
+                        .iter()
+                        .map(|&i| LibraryItem::Track(page.items[i].id.clone())),
+                );
+            }
         }
         items
     }

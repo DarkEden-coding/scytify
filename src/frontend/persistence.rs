@@ -78,10 +78,13 @@ impl Preferences {
                 | "playlists"
                 | "playlist"
                 | "artist"
+                | "artist-popular"
                 | "album"
                 | "search"
                 | "liked"
                 | "saved-albums"
+                | "followed-artists"
+                | "made-for-you"
         ) || p.title.len() > 1024
             || p.key.len() > 1024
             || p.artwork.as_ref().is_some_and(|a| a.len() > 1024)
@@ -133,6 +136,9 @@ impl Preferences {
             "artist" => Query::ArtistAlbums {
                 artist_id: SpotifyId(self.key),
             },
+            "artist-popular" => Query::ArtistTopTracks {
+                artist_id: SpotifyId(self.key),
+            },
             "album" => Query::AlbumTracks {
                 album_id: SpotifyId(self.key),
             },
@@ -145,6 +151,7 @@ impl Preferences {
             }
             "liked" => Query::LikedTracks,
             "saved-albums" => Query::SavedAlbums,
+            "followed-artists" => Query::FollowedArtists,
             "made-for-you" => Query::MadeForYou,
             _ => Query::OwnPlaylists,
         };
@@ -213,13 +220,16 @@ impl Preferences {
         let (kind, key) = match &ui.query {
             Query::PlaylistTracks { playlist_id } => ("playlist", playlist_id.0.clone()),
             Query::ArtistAlbums { artist_id } => ("artist", artist_id.0.clone()),
+            Query::ArtistTopTracks { artist_id } => ("artist-popular", artist_id.0.clone()),
             Query::AlbumTracks { album_id } => ("album", album_id.0.clone()),
             Query::Search { text }
             | Query::SearchArtists { text }
             | Query::SearchAlbums { text }
-            | Query::SearchTracks { text } => ("search", text.clone()),
+            | Query::SearchTracks { text }
+            | Query::SearchPlaylists { text } => ("search", text.clone()),
             Query::LikedTracks => ("liked", String::new()),
             Query::SavedAlbums => ("saved-albums", String::new()),
+            Query::FollowedArtists => ("followed-artists", String::new()),
             Query::MadeForYou => ("made-for-you", String::new()),
             Query::OwnPlaylists if !ui.home => ("playlists", String::new()),
             _ => ("library", String::new()),

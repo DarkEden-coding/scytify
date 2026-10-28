@@ -235,6 +235,12 @@ impl Catalog {
             artists: top(self.search_artists(text)),
             albums: top(self.search_albums(text)),
             tracks: top(self.search_tracks(text)),
+            playlists: top(self
+                .playlists
+                .iter()
+                .filter(|p| p.name.to_lowercase().contains(&text.to_lowercase()))
+                .cloned()
+                .collect()),
         }
     }
 }
@@ -524,6 +530,19 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
                 }
                 Query::LikedTracks => PageData::Tracks(listing(&catalog.liked, request)),
                 Query::SavedAlbums => PageData::Albums(page(&catalog.saved_albums, request)),
+                Query::FollowedArtists => PageData::Artists(page(&catalog.artists, request)),
+                Query::ArtistTopTracks { artist_id } => PageData::Tracks(listing(
+                    &tracks
+                        .iter()
+                        .filter(|t| t.artists.iter().any(|a| a.id == artist_id))
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    request,
+                )),
+                Query::SearchPlaylists { text } => {
+                    PageData::Playlists(search_page(&catalog.search(&text).playlists, request))
+                }
                 Query::MadeForYou => PageData::Playlists(page(&catalog.playlists, request)),
                 Query::Search { text } => PageData::Search(catalog.search(&text)),
                 Query::SearchArtists { text } => {

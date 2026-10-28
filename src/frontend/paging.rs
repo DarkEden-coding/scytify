@@ -21,7 +21,7 @@ pub fn page_info(data: &PageData) -> (usize, Option<u64>, bool) {
         PageData::Queue { page: p, .. } => (p.items.len(), p.total, p.has_more),
         // Bounded overview: never paged or appended.
         PageData::Search(r) => (
-            r.artists.len() + r.albums.len() + r.tracks.len(),
+            r.artists.len() + r.albums.len() + r.tracks.len() + r.playlists.len(),
             None,
             false,
         ),

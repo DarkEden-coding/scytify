@@ -77,6 +77,7 @@ mod tests {
     fn results(artist: &str, album: &str, track: &str) -> SearchResults {
         let id = |s: &str| SpotifyId(s.into());
         SearchResults {
+            playlists: vec![],
             artists: vec![Artist {
                 id: id("artist"),
                 name: artist.into(),

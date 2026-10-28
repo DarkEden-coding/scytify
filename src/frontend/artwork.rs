@@ -189,6 +189,12 @@ impl Ui {
                 };
                 urls.push((url, shape));
             }
+            if let Some(tracks) = &self.artist_top
+                && self.artist_page()
+                && self.on_screen(layout::HERO_HEIGHT, self.popular_height())
+            {
+                urls.extend(tracks.iter().filter_map(Track::artwork_url).map(cover));
+            }
             if let Some(data) = &self.data {
                 let (start, end) = self.browser_window(data);
                 match data {
@@ -209,6 +215,22 @@ impl Ui {
                             .filter_map(|x| x.artwork_url.as_deref())
                             .map(cover),
                     ),
+                    PageData::Tracks(p) if self.track_view_active() => {
+                        let indices =
+                            track_filter::indices(&p.items, &self.track_filter, self.track_sort);
+                        let (start, end) = layout::visible_rows(
+                            indices.len(),
+                            self.scroll - self.content_top(data),
+                            self.main_size.height,
+                            self.palette.shape.row_height,
+                        );
+                        urls.extend(
+                            indices[start..end]
+                                .iter()
+                                .filter_map(|&i| p.items[i].artwork_url())
+                                .map(cover),
+                        );
+                    }
                     PageData::Tracks(p) => urls.extend(
                         nearest_first(start, end)
                             .filter_map(|i| p.items[i].artwork_url())
@@ -243,6 +265,18 @@ impl Ui {
                                 r.artists.iter().take(columns).filter_map(|x| {
                                     Some((x.artwork_url.as_deref()?, Shape::Round))
                                 }),
+                            );
+                        }
+                        if layout
+                            .playlists
+                            .is_some_and(|top| self.on_screen(top, shelf))
+                        {
+                            urls.extend(
+                                r.playlists
+                                    .iter()
+                                    .take(columns)
+                                    .filter_map(|x| x.artwork_url.as_deref())
+                                    .map(cover),
                             );
                         }
                         if layout.albums.is_some_and(|top| self.on_screen(top, shelf)) {

@@ -1,6 +1,6 @@
 # Scytify
 
-A personal, native Rust Spotify client for Linux. Iced draws the UI without a
+A personal, native Rust Spotify client for Linux and macOS. Iced draws the UI without a
 webview; librespot provides unofficial local playback. Spotify Premium and a
 personal developer app are required. This project is not affiliated with Spotify.
 
@@ -37,7 +37,7 @@ an update macOS may ask once more for Keychain access.
 
 The app requests private and collaborative playlists, your profile, saved library
 (`user-library-read`, and `user-library-modify` plus `playlist-modify-public` to like
-songs and save albums and playlists), streaming, and playback permissions
+songs and save albums and playlists), followed artists (`user-follow-read`), streaming, and playback permissions
 (`user-read-playback-state`, `user-modify-playback-state`,
 `user-read-currently-playing`). If you authorized an earlier version, sign out in
 Settings and sign in again to grant the new scopes. Spotify does not upgrade old
@@ -47,7 +47,7 @@ Scytify registers as a Spotify Connect device and follows the active player
 on your account. Connect uses librespot's unofficial protocol and can break when
 Spotify changes it. Observation falls back to the official Web API when live
 updates fail. Playback control requires Premium and Spotify may restrict developer
-apps. Library editing remains outside this app.
+apps. Songs, albums and playlists can be saved or removed from Your Library. Playlist contents and details are still managed in Spotify.
 
 Credentials belong in the desktop Secret Service, supplied by KDE Wallet on the
 target machine. There is no plaintext credential fallback. Unlock or repair the
@@ -74,10 +74,13 @@ reject this access without notice; this project does not promise live compatibil
 ## Interface
 
 The layout follows the Spotify desktop client: a navigation and playlist sidebar,
-a main view with back/forward and search (a top result beside the first songs, then artists and albums), Home shelves of
+a main view with back/forward and search (a top result beside the first songs, then artists, albums and playlists), Home shelves of
 your playlists and saved albums, Liked Songs, card grids for playlists, artists and albums, album and playlist pages with a track table, a now-playing bar, and an
-optional queue panel. Settings and Quit live behind the gear in the top bar. Playback is read-only with respect to
-your Spotify library. Manage playlists in Spotify itself.
+optional queue or lyrics panel. Saved albums and followed artists have library destinations. Followed artists require a Spotify permission that the current sign-in does not request; denial is shown on the page. Artist pages offer Popular songs when Spotify permits that endpoint. Settings and Quit live behind the gear in the top bar.
+
+Track pages can filter loaded songs by title, artist or album, and sort by title, artist, album or duration. The controls show the loaded count and can load more within the 1000-song working set. Clearing the filter and choosing Custom order restores ordinary windowed browsing of larger collections. Sorting changes the view; playback continues in original source order. Duplicate occurrences and skipped raw rows retain their playback offsets.
+
+Right-click a song row or the now-playing area for song actions, album/artist navigation and Copy Spotify song link. Click a queue title for the same actions. Play song starts a standalone context; it does not jump to an existing queue occurrence. The player cover/title opens its album, and each artist name opens that artist. Album and playlist headers can copy their Spotify links. Failed Home shelves have a retry button.
 
 Local TOML themes change appearance without executing code or moving navigation.
 The default is the flat `themes/spotify-dark.toml`; `themes/dark-neumorphic.toml`
@@ -93,6 +96,7 @@ Keyboard shortcuts (also listed in Settings):
 | Keys | Action |
 | --- | --- |
 | Space | Play or pause (not while typing in a text field) |
+| Up / Down, Enter | Select a loaded song on a track page, play selected |
 | Ctrl+Left / Ctrl+Right | Previous or next track |
 | Ctrl+Up / Ctrl+Down | Volume up or down by 5% |
 | Ctrl+S | Shuffle on or off |
@@ -101,6 +105,8 @@ Keyboard shortcuts (also listed in Settings):
 | Esc | Close the device picker, then Settings, then the queue panel; in the search field, leave it |
 | Alt+Left / Alt+Right, mouse back/forward | Navigate back or forward |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in, zoom out, reset zoom |
+
+On macOS, Command also works for the Control shortcuts above. Option is the macOS name for Alt. Escape closes an open song action sheet first.
 
 The window draws its own title bar with minimize, maximize and close buttons; drag the
 empty bar to move it and drag the edges to resize. Settings can switch to the system title bar.
@@ -111,9 +117,7 @@ Scytify is a plain window app with no tray entry: closing the window quits
 and stops playback. Media controls use this app's MPRIS service, not the
 official Spotify application's service.
 
-Discover Weekly, Smart Shuffle, playlist editing, lyrics, lossless playback,
-and guaranteed offline listening are outside the initial release. Cached audio
-is not an offline-download entitlement.
+Made for you includes Discover Weekly when the playback session supplies it. Lyrics use a separate Spicy Lyrics API key configured in Settings. Smart Shuffle, playlist creation/content editing, lossless playback and guaranteed offline listening remain outside this implementation. Cached audio is not an offline-download entitlement. See PARITY_AUDIT.md for the dated parity status and remaining work.
 
 ## Connect fallback and logging
 

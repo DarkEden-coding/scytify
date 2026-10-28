@@ -55,7 +55,6 @@ impl Ui {
             // Shrinks before anything else so the window buttons never clip on narrow windows.
             .push(container(search).width(Length::Fill).max_width(380.0))
             .push(space().width(Length::Fill))
-            .push(self.icon_button(Icon::ListMusic, 20.0, self.queue, Message::Queue))
             .push(self.icon_button(Icon::Settings, 20.0, self.settings, Message::Settings));
         let mut padding = iced::Padding::from([0.0, layout::CONTENT_PADDING - 8.0]);
         if custom {

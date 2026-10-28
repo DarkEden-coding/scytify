@@ -33,6 +33,22 @@ impl Ui {
         let library = self.panel(
             column![
                 container(header).padding([4.0, 8.0]),
+                self.nav(
+                    Icon::Album,
+                    "Saved albums",
+                    !self.settings && matches!(self.query, Query::SavedAlbums),
+                    Message::Navigate(Route::browse(Query::SavedAlbums, "Saved albums", None))
+                ),
+                self.nav(
+                    Icon::Users,
+                    "Followed artists",
+                    !self.settings && matches!(self.query, Query::FollowedArtists),
+                    Message::Navigate(Route::browse(
+                        Query::FollowedArtists,
+                        "Followed artists",
+                        None
+                    ))
+                ),
                 text_input("Filter playlists", &self.sidebar_filter)
                     .font(p.font())
                     .size(p.font_size.small)

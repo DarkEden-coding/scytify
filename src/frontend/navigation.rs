@@ -67,6 +67,7 @@ pub fn is_search(query: &Query) -> bool {
             | Query::SearchArtists { .. }
             | Query::SearchAlbums { .. }
             | Query::SearchTracks { .. }
+            | Query::SearchPlaylists { .. }
     )
 }
 

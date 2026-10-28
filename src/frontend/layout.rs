@@ -17,6 +17,8 @@ pub const HERO_ART: f32 = 200.0;
 pub const ACTIONS_HEIGHT: f32 = 88.0;
 /// "#  Title  Album  Duration" header above a track table, including its divider.
 pub const TABLE_HEADER: f32 = 41.0;
+/// Search/sort controls and loaded-section information above track rows.
+pub const TRACK_TOOLS_HEIGHT: f32 = 104.0;
 
 /// Minimum card width (about a 150px cover); cards stretch to fill the row.
 pub const GRID_CARD_WIDTH: f32 = 170.0;

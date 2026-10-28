@@ -23,8 +23,10 @@ pub enum Shortcut {
 }
 
 /// Bindings shown in Settings, in display order.
+#[cfg(not(target_os = "macos"))]
 pub const HINTS: &[(&str, &str)] = &[
     ("Space", "Play or pause"),
+    ("Up / Down, Enter", "Select a loaded song, play selected"),
     ("Ctrl + Left / Right", "Previous or next track"),
     ("Ctrl + Up / Down", "Volume up or down 5%"),
     ("Ctrl + S", "Shuffle on or off"),
@@ -39,6 +41,25 @@ pub const HINTS: &[(&str, &str)] = &[
     ("Ctrl + 0", "Reset zoom"),
 ];
 
+/// On macOS, Command and Control both invoke these shortcuts.
+#[cfg(target_os = "macos")]
+pub const HINTS: &[(&str, &str)] = &[
+    ("Space", "Play or pause"),
+    ("Up / Down, Enter", "Select a loaded song, play selected"),
+    ("Cmd or Ctrl + Left / Right", "Previous or next track"),
+    ("Cmd or Ctrl + Up / Down", "Volume up or down 5%"),
+    ("Cmd or Ctrl + S", "Shuffle on or off"),
+    ("Cmd or Ctrl + R", "Cycle repeat"),
+    ("/ or Cmd or Ctrl + L", "Search"),
+    (
+        "Esc",
+        "Close the device picker, Settings or the queue, leave search",
+    ),
+    ("Option + Left / Right", "Back or forward"),
+    ("Cmd or Ctrl + = / -", "Zoom in or out"),
+    ("Cmd or Ctrl + 0", "Reset zoom"),
+];
+
 /// Volume change of one Ctrl+Up or Ctrl+Down press.
 pub const VOLUME_STEP: f32 = 0.05;
 
@@ -51,7 +72,7 @@ pub fn map(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
             _ => None,
         };
     }
-    if modifiers.control() {
+    if modifiers.control() || (cfg!(target_os = "macos") && modifiers.logo()) {
         return match key {
             Key::Named(Named::ArrowLeft) => Some(Shortcut::Previous),
             Key::Named(Named::ArrowRight) => Some(Shortcut::Next),
@@ -126,6 +147,27 @@ mod tests {
         assert_eq!(map(&key("-"), ctrl), Some(Shortcut::ZoomOut));
         assert_eq!(map(&key("0"), ctrl), Some(Shortcut::ZoomReset));
         assert_eq!(map(&key("-"), none), None);
+    }
+    #[test]
+    fn command_shortcuts_are_macos_only() {
+        let command = Modifiers::LOGO;
+        let expected = if cfg!(target_os = "macos") {
+            Some(Shortcut::FocusSearch)
+        } else {
+            None
+        };
+        assert_eq!(map(&key("l"), command), expected);
+        assert_eq!(map(&key("l"), Modifiers::CTRL), Some(Shortcut::FocusSearch));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                map(&Key::Named(Named::ArrowRight), command),
+                Some(Shortcut::Next)
+            );
+            assert_eq!(
+                map(&key("+"), command | Modifiers::SHIFT),
+                Some(Shortcut::ZoomIn)
+            );
+        }
     }
     #[test]
     fn volume_steps_are_clamped() {

@@ -1,6 +1,19 @@
 # Validation
 
-## Build and automated checks
+## Desktop parity implementation, 2026-10-27
+
+Automated checks on macOS Apple Silicon with Rust 1.98.0:
+
+- `cargo fmt --check` and `git diff --check`.
+- `cargo clippy --locked --all-targets -- -D warnings`.
+- `cargo test --locked`: 166 Scytify unit tests, 3 integration tests and 4 vendored OAuth tests, 173 total, zero failures.
+- `cargo build --release --locked` completed successfully. The installed Rust toolchain emits a nonfatal strip warning: `rust-objcopy` cannot find `libLLVM.dylib`. No profile or environment override was used; the release executable is produced.
+
+New regressions cover playlist search and non-owned playlists, followed-artist cursor paging past skipped rows, popular-song permission failures, stable duplicate sorting, keyboard playback at raw offsets, explicit shelf retry, macOS Command mapping and the current-device fallback. The offline frontend example compiles under the all-targets check. Existing dock-icon formatting and range-loop lint failures were fixed.
+
+Parent acceptance installed and launched the combined build and verified its signature. Live checks passed for saved-album and album-header artist navigation, non-owned playlist listings, Command search focus, playlist search and Show all, loaded-song filtering, title sorting and keyboard selection in the 797-track playlist, right-click actions, remote current-device display and icon hints. Playlist cover checks prompted exact Spotify image CDN host additions. Followed artists needs renewed consent for the newly requested read scope; the current token was retained. Spotify denied the popular-song endpoint for this client/account and the capability explanation rendered. No live consent, library write, enqueue, or playback transfer was performed. Narrow-window layout, clipboard content, positive followed-artist access after consent, and VoiceOver remain unverified. The earlier platform measurements below are historical evidence.
+
+## Earlier build and automated checks
 
 Validated with Rust 1.98.0 on Fedora 44 KDE Plasma, Wayland, Ryzen 7 3700X,
 32 GB RAM, RTX 5060, and a 1920×1080 display running at 240 Hz.
@@ -71,6 +84,4 @@ also does not establish performance for a 50,000-track Spotify playlist.
 - Large playlist loading, unavailable tracks, long sessions, and network recovery.
 - Ten-minute hidden playback CPU/RAM measurements and visible scrolling tests.
 
-The bounded disk cache currently stores artwork. Full persistent library metadata
-and audio caching are not implemented. Discover Weekly and Smart Shuffle remain
-outside this first implementation, not simulated features.
+The bounded disk cache stores artwork and encrypted librespot audio. It does not provide user-managed downloads or a guaranteed offline library. Made for you can include Discover Weekly through the playback session; Smart Shuffle remains deferred.

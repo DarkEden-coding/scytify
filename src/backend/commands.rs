@@ -426,8 +426,12 @@ pub(super) fn handle_command(
             if jobs.len() >= 4 {
                 return Some(Err(safe(ErrorKind::Unavailable, "backend is busy")));
             }
-            // Spotify-made playlists are only readable over the playback session.
-            if matches!(&query, Query::MadeForYou)
+            // Spotify-made playlists are only readable over the playback session, and
+            // popular songs are best read there too (the Web API only has them as a fallback).
+            let top_tracks: bool =
+                matches!(&query, Query::ArtistTopTracks { .. }) && player.is_some();
+            if top_tracks
+                || matches!(&query, Query::MadeForYou)
                 || matches!(&query, Query::PlaylistTracks { playlist_id } if discover::is_spotify_owned(playlist_id))
             {
                 let Some(session) = player.as_ref().map(|p| p.session()) else {

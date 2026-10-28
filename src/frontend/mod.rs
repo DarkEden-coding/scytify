@@ -20,6 +20,7 @@ mod splits;
 mod styles;
 pub mod theme;
 mod tint;
+mod track_filter;
 mod view;
 use crate::{app_icon, contracts::*, domain::*};
 use iced::futures::SinkExt;
@@ -80,6 +81,15 @@ enum Message {
     MainResized(iced::Size),
     HoverRow(usize, bool),
     SelectRow(usize),
+    TrackFilter(String),
+    TrackSort(track_filter::Sort),
+    TrackMore,
+    RowMove(bool),
+    PlaySelected,
+    TrackMenu(Box<Track>),
+    CloseTrackMenu,
+    CopyLink(String),
+    RetryShelves,
     TogglePlayback,
     ToggleMute,
     /// Open or close the Connect device picker.
@@ -215,6 +225,11 @@ struct Ui {
     mixes_pending: Option<RequestId>,
     /// Why the mixes could not be loaded; Home shows it instead of retrying.
     mixes_failed: Option<String>,
+    /// Popular songs of the artist page, fetched beside its albums. When Spotify refuses
+    /// them the section is left out instead of showing an error above the discography.
+    artist_top: Option<Vec<Track>>,
+    artist_top_pending: Option<RequestId>,
+    artist_top_failed: bool,
     /// Liked Songs total, known once its page has loaded, for the sidebar subtitle.
     liked_count: Option<u64>,
     /// Which shown songs are liked and which albums and playlists are saved.
@@ -232,6 +247,9 @@ struct Ui {
     pending_play: Option<pending_play::PendingPlay>,
     hovered_row: Option<usize>,
     selected_row: Option<usize>,
+    track_filter: String,
+    track_sort: track_filter::Sort,
+    track_menu: Option<Box<Track>>,
     queue_data: Option<PageData>,
     queue_pending: Option<RequestId>,
     queue_more: Option<RequestId>,
@@ -367,6 +385,9 @@ impl Ui {
             mixes: None,
             mixes_pending: None,
             mixes_failed: None,
+            artist_top: None,
+            artist_top_pending: None,
+            artist_top_failed: false,
             liked_count: None,
             library: Default::default(),
             history: History::default(),
@@ -380,6 +401,9 @@ impl Ui {
             pending_play: None,
             hovered_row: None,
             selected_row: None,
+            track_filter: String::new(),
+            track_sort: track_filter::Sort::Source,
+            track_menu: None,
             queue_data: None,
             queue_pending: None,
             queue_more: None,
@@ -505,6 +529,13 @@ impl Ui {
         self.reset_scroll = true;
         self.hovered_row = None;
         self.selected_row = None;
+        self.track_filter.clear();
+        self.track_sort = track_filter::Sort::Source;
+        self.track_menu = None;
+        let artist_top = self.artist_top_pending.take();
+        self.cancel(artist_top);
+        self.artist_top = None;
+        self.artist_top_failed = false;
         if self.home {
             // Refresh the saved-albums shelf with the page; `ensure_shelf` refetches it.
             let shelf = self.shelf_pending.take();
@@ -540,6 +571,9 @@ impl Ui {
         let Some(data) = &self.data else {
             return;
         };
+        if matches!(data, PageData::Tracks(_)) && self.track_view_active() {
+            return;
+        }
         let wanted: Option<paging::Fill> = paging::wanted_fill(data, self.visible_slots(data));
         if let Some((_, sent)) = &self.more_pending
             && wanted.is_some_and(|w| sent.serves(&w))
@@ -589,6 +623,30 @@ impl Ui {
         }
         self.shelf_pending = self.send(Action::Fetch {
             query: Query::SavedAlbums,
+            page: PageRequest {
+                offset: 0,
+                limit: SHELF_LIMIT,
+            },
+        });
+    }
+    /// Fetch the popular songs of the artist page once per page load.
+    fn ensure_artist_top(&mut self) {
+        let Query::ArtistAlbums { artist_id } = &self.query else {
+            return;
+        };
+        if self.settings
+            || self.window.is_none()
+            || !matches!(self.state.auth, AuthState::Ready { .. })
+            || self.artist_top.is_some()
+            || self.artist_top_pending.is_some()
+            || self.artist_top_failed
+        {
+            return;
+        }
+        self.artist_top_pending = self.send(Action::Fetch {
+            query: Query::ArtistTopTracks {
+                artist_id: artist_id.clone(),
+            },
             page: PageRequest {
                 offset: 0,
                 limit: SHELF_LIMIT,
@@ -684,6 +742,9 @@ impl Ui {
         self.mixes_pending = None;
         self.mixes = None;
         self.mixes_failed = None;
+        self.artist_top_pending = None;
+        self.artist_top = None;
+        self.artist_top_failed = false;
         self.liked_count = None;
         self.library.clear();
         self.sidebar_pending = None;
@@ -906,6 +967,7 @@ impl Ui {
         let task: Task<Message> = self.reduce(message);
         self.ensure_shelf();
         self.ensure_mixes();
+        self.ensure_artist_top();
         self.fetch_artwork();
         self.check_library();
         if self.notice.is_empty() {
@@ -919,9 +981,12 @@ impl Ui {
         }
         if std::mem::take(&mut self.reset_scroll) && self.window.is_some() {
             self.glide.cancel(smooth_scroll::Area::Main);
-            let top = iced::widget::operation::snap_to(
+            let top = iced::widget::operation::scroll_to(
                 iced::widget::Id::new(MAIN_SCROLL),
-                iced::widget::operation::RelativeOffset::START,
+                iced::widget::operation::AbsoluteOffset {
+                    x: 0.0,
+                    y: self.scroll,
+                },
             );
             return Task::batch([task, top]);
         }
@@ -1132,7 +1197,13 @@ impl Ui {
                         if self.mixes_pending == Some(id) && !early {
                             self.mixes_failed = Some(e.message.clone());
                         }
+                        // The section is left out when refused, so that is no notice.
+                        let omitted: bool = self.artist_top_pending == Some(id);
+                        if omitted && !early {
+                            self.artist_top_failed = true;
+                        }
                         for slot in [
+                            &mut self.artist_top_pending,
                             &mut self.shelf_pending,
                             &mut self.mixes_pending,
                             &mut self.sidebar_pending,
@@ -1155,7 +1226,7 @@ impl Ui {
                                 "{} Checkpoint not confirmed. Use Quit or close again to exit without saving.",
                                 e.message
                             );
-                        } else if !artwork && !early && !(quiet && passing(e.kind)) {
+                        } else if !artwork && !early && !omitted && !(quiet && passing(e.kind)) {
                             self.show_notice(e.message);
                         }
                     }
@@ -1217,6 +1288,7 @@ impl Ui {
             }
             Message::Shortcut(shortcut) => return self.shortcut(shortcut),
             Message::Action(action) => {
+                self.track_menu = None;
                 if matches!(action, Action::Quit) && (self.disconnected || self.quit_failed) {
                     return iced::exit();
                 }
@@ -1229,6 +1301,7 @@ impl Ui {
                 self.send(action);
             }
             Message::PlayTrack(source, track) => {
+                self.track_menu = None;
                 self.play_context = context_query(&source);
                 if let Some(request) = self.send(Action::Play(source)) {
                     let pending =
@@ -1290,8 +1363,14 @@ impl Ui {
                 }
                 return iced::widget::operation::focus(iced::widget::Id::new(SEARCH_INPUT));
             }
-            Message::Navigate(route) => self.navigate(route),
-            Message::ToggleSaved(entry) => self.toggle_saved(entry),
+            Message::Navigate(route) => {
+                self.track_menu = None;
+                self.navigate(route);
+            }
+            Message::ToggleSaved(entry) => {
+                self.track_menu = None;
+                self.toggle_saved(entry);
+            }
             Message::RetryPage => self.fetch(),
             Message::Back => {
                 if let Some(route) = self.history.back(self.route()) {
@@ -1327,6 +1406,99 @@ impl Ui {
                 }
             }
             Message::SelectRow(index) => self.selected_row = Some(index),
+            Message::TrackFilter(filter) => {
+                self.track_filter = filter;
+                self.selected_row = None;
+                self.scroll = 0.0;
+                self.reset_scroll = true;
+            }
+            Message::TrackSort(sort) => {
+                self.track_sort = sort;
+                self.selected_row = None;
+                self.scroll = 0.0;
+                self.reset_scroll = true;
+            }
+            Message::TrackMenu(track) => self.track_menu = Some(track),
+            Message::CloseTrackMenu => self.track_menu = None,
+            Message::CopyLink(link) => {
+                self.track_menu = None;
+                return iced::clipboard::write(link);
+            }
+            Message::RetryShelves => {
+                self.shelf_failed = false;
+                self.mixes_failed = None;
+            }
+            Message::TrackMore => {
+                if self.more_pending.is_none()
+                    && let Some(data) = &self.data
+                    && paging::can_extend(data)
+                {
+                    let fill = paging::Fill {
+                        kind: paging::FillKind::Append,
+                        offset: paging::next_offset(data),
+                        limit: MAX_PAGE_SIZE,
+                    };
+                    if let Some(id) = self.send(Action::Fetch {
+                        query: self.query.clone(),
+                        page: PageRequest {
+                            offset: fill.offset,
+                            limit: fill.limit,
+                        },
+                    }) {
+                        self.more_pending = Some((id, fill));
+                        self.requests.insert(id, self.generation);
+                    }
+                }
+            }
+            Message::RowMove(down) => {
+                if self.settings || self.home || self.track_menu.is_some() {
+                    return Task::none();
+                }
+                if let Some(PageData::Tracks(page)) = &self.data {
+                    let indices =
+                        track_filter::indices(&page.items, &self.track_filter, self.track_sort);
+                    let position = self
+                        .selected_row
+                        .and_then(|i| indices.iter().position(|&n| n + page.offset as usize == i));
+                    let next = position.map_or(0, |p| {
+                        if down {
+                            (p + 1).min(indices.len().saturating_sub(1))
+                        } else {
+                            p.saturating_sub(1)
+                        }
+                    });
+                    self.selected_row = indices.get(next).map(|&i| i + page.offset as usize);
+                    if self.selected_row.is_some() {
+                        self.scroll = (self.content_top(self.data.as_ref().unwrap())
+                            + (if self.track_view_active() {
+                                next
+                            } else {
+                                page.offset as usize + next
+                            }) as f32
+                                * self.palette.shape.row_height
+                            - self.main_size.height / 2.0)
+                            .max(0.0);
+                        self.reset_scroll = true;
+                    }
+                }
+            }
+            Message::PlaySelected => {
+                if self.settings || self.home || self.track_menu.is_some() {
+                    return Task::none();
+                }
+                if let Some(PageData::Tracks(page)) = &self.data
+                    && let Some(index) = self
+                        .selected_row
+                        .and_then(|i| i.checked_sub(page.offset as usize))
+                    && let Some(track) = page.items.get(index)
+                    && track.playable
+                {
+                    return self.reduce(Message::PlayTrack(
+                        self.source(&page.items, page.offset, index),
+                        Box::new(track.clone()),
+                    ));
+                }
+            }
             Message::Queue => {
                 self.queue = !self.queue;
                 self.lyrics_open &= !self.queue;
@@ -1520,14 +1692,21 @@ impl Ui {
         if let Query::Search { text }
         | Query::SearchArtists { text }
         | Query::SearchAlbums { text }
-        | Query::SearchTracks { text } = &self.query
+        | Query::SearchTracks { text }
+        | Query::SearchPlaylists { text } = &self.query
         {
             self.search = text.clone();
         }
     }
     /// Route a page completion to the sidebar, shelf, queue or browser it belongs to.
     fn complete_page(&mut self, id: RequestId, data: PageData) {
-        if self.mixes_pending == Some(id) {
+        if self.artist_top_pending == Some(id) {
+            self.artist_top_pending = None;
+            match data {
+                PageData::Tracks(page) => self.artist_top = Some(page.items),
+                _ => self.artist_top_failed = true,
+            }
+        } else if self.mixes_pending == Some(id) {
             self.mixes_pending = None;
             match data {
                 PageData::Playlists(page) => self.mixes = Some(page.items),
@@ -1591,6 +1770,10 @@ impl Ui {
                 && more == id
             {
                 self.more_pending = None;
+                if fill.kind != paging::FillKind::Append {
+                    self.selected_row = None;
+                    self.hovered_row = None;
+                }
                 self.apply_fill(fill.kind, data);
             } else {
                 self.pending = None;
@@ -1814,6 +1997,10 @@ impl Ui {
             Shortcut::ZoomOut => return self.set_zoom(chrome::step_zoom(self.zoom, false)),
             Shortcut::ZoomReset => return self.set_zoom(1.0),
             Shortcut::Escape => {
+                if self.track_menu.is_some() {
+                    self.track_menu = None;
+                    return Task::none();
+                }
                 if self.devices {
                     return self.reduce(Message::Devices);
                 }
@@ -1839,7 +2026,10 @@ impl Ui {
     /// Whether a track table gets the large header and play actions; search "Show all"
     /// songs get a plain section heading instead.
     fn track_hero(&self) -> bool {
-        !matches!(self.query, Query::SearchTracks { .. })
+        !matches!(
+            self.query,
+            Query::SearchTracks { .. } | Query::ArtistTopTracks { .. }
+        )
     }
     /// Height of a shelf: a section heading over one row of cards.
     fn shelf_height(&self) -> f32 {
@@ -1883,10 +2073,25 @@ impl Ui {
         };
         let artists: Option<f32> = place(!results.artists.is_empty());
         let albums: Option<f32> = place(!results.albums.is_empty());
+        let playlists: Option<f32> = place(!results.playlists.is_empty());
         SearchLayout {
             top,
             artists,
             albums,
+            playlists,
+        }
+    }
+    /// Height of the artist page's Popular songs block: a heading over the song rows, one
+    /// row of status while they load, and nothing when Spotify has none to show.
+    fn popular_height(&self) -> f32 {
+        let rows: usize = match &self.artist_top {
+            Some(tracks) => tracks.len(),
+            None if self.artist_top_failed => 0,
+            None => 1,
+        };
+        match rows {
+            0 => 0.0,
+            rows => layout::SECTION_HEADING + rows as f32 * self.palette.shape.row_height,
         }
     }
     /// Fixed height of the blocks above the virtualized list of a page.
@@ -1894,13 +2099,18 @@ impl Ui {
         match data {
             PageData::Playlists(_) | PageData::Artists(_) => layout::SECTION_HEADING,
             PageData::Albums(_) if self.artist_page() => {
-                layout::HERO_HEIGHT + layout::SECTION_HEADING
+                layout::HERO_HEIGHT + self.popular_height() + layout::SECTION_HEADING
             }
             PageData::Albums(_) => layout::SECTION_HEADING,
             PageData::Tracks(_) if self.track_hero() => {
-                layout::HERO_HEIGHT + layout::ACTIONS_HEIGHT + layout::TABLE_HEADER
+                layout::HERO_HEIGHT
+                    + layout::ACTIONS_HEIGHT
+                    + layout::TABLE_HEADER
+                    + layout::TRACK_TOOLS_HEIGHT
             }
-            PageData::Tracks(_) => layout::SECTION_HEADING + layout::TABLE_HEADER,
+            PageData::Tracks(_) => {
+                layout::SECTION_HEADING + layout::TABLE_HEADER + layout::TRACK_TOOLS_HEIGHT
+            }
             PageData::Search(_) | PageData::Queue { .. } => 0.0,
         }
     }
@@ -1972,6 +2182,7 @@ struct SearchLayout {
     top: Option<layout::SearchTop>,
     artists: Option<f32>,
     albums: Option<f32>,
+    playlists: Option<f32>,
 }
 
 /// Page query matching a playback context; single tracks have none.
@@ -2067,6 +2278,20 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _: window::Id) -> O
         return None;
     }
     if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+        if modifiers.is_empty() {
+            match key {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                    return Some(Message::RowMove(true));
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                    return Some(Message::RowMove(false));
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => {
+                    return Some(Message::PlaySelected);
+                }
+                _ => {}
+            }
+        }
         return shortcuts::map(&key, modifiers).map(Message::Shortcut);
     }
     None
@@ -2860,6 +3085,73 @@ mod browsing_tests {
         assert_eq!(ui.state.player.status, PlaybackStatus::Paused);
     }
 
+    /// Filtering/sorting selects source occurrences, including repeated track IDs, and
+    /// loading another page follows the raw continuation instead of a display index.
+    #[test]
+    fn filtered_keyboard_play_and_load_more_keep_source_occurrences() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        ui.home = false;
+        ui.query = Query::LikedTracks;
+        let mut items = vec![
+            track("same", Some(100)),
+            track("same", Some(102)),
+            track("same", Some(105)),
+        ];
+        items[0].name = "Zebra".into();
+        items[1].name = "Alpha".into();
+        items[2].name = "Alpha".into();
+        ui.data = Some(PageData::Tracks(Page {
+            offset: 100,
+            total: Some(200),
+            items,
+            has_more: true,
+            next_offset: 106,
+        }));
+        let _ = ui.update(Message::TrackFilter("ALP".into()));
+        let _ = ui.update(Message::TrackSort(track_filter::Sort::Title));
+        let _ = ui.update(Message::RowMove(true));
+        assert_eq!(ui.selected_row, Some(101));
+        let _ = ui.update(Message::RowMove(true));
+        assert_eq!(ui.selected_row, Some(102));
+        let _ = ui.update(Message::PlaySelected);
+        assert!(matches!(
+            back.commands.try_recv().unwrap().action,
+            Action::Play(PlaySource::LikedSongs { start_offset: 105 })
+        ));
+        let _ = ui.update(Message::TrackMore);
+        let command = back.commands.try_recv().unwrap();
+        assert!(matches!(
+            command.action,
+            Action::Fetch {
+                page: PageRequest { offset: 106, .. },
+                ..
+            }
+        ));
+        complete(
+            &mut ui,
+            command.id,
+            Response::Page(PageData::Tracks(Page {
+                offset: 106,
+                total: Some(200),
+                items: vec![track("Alpha", Some(110))],
+                has_more: false,
+                next_offset: 200,
+            })),
+        );
+        assert_eq!(ui.track_filter, "ALP");
+        assert_eq!(paging::page_info(ui.data.as_ref().unwrap()).0, 4);
+        assert!(
+            back.commands.try_recv().is_err(),
+            "filter does not request unfiltered viewport pages"
+        );
+        ui.settings = true;
+        let _ = ui.update(Message::PlaySelected);
+        assert!(
+            back.commands.try_recv().is_err(),
+            "Settings must not play a hidden selection"
+        );
+    }
+
     /// Regression: the backend skips local files, so a row plays from its raw position.
     #[test]
     fn rows_play_from_their_source_position() {
@@ -2977,5 +3269,19 @@ mod browsing_tests {
         assert!(ui.shelf_failed && ui.notice == "sign in again");
         let _ = ui.update(Message::Tick);
         assert!(back.commands.try_recv().is_err());
+        let _ = ui.update(Message::RetryShelves);
+        assert!(!ui.shelf_failed);
+        assert!(matches!(
+            back.commands.try_recv().unwrap().action,
+            Action::Fetch {
+                query: Query::SavedAlbums,
+                ..
+            }
+        ));
+        let _ = ui.update(Message::Tick);
+        assert!(
+            back.commands.try_recv().is_err(),
+            "retry stays single-flight"
+        );
     }
 }
