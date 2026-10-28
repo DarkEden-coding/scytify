@@ -34,13 +34,13 @@ impl Ui {
             column![
                 container(header).padding([4.0, 8.0]),
                 self.nav(
-                    Icon::Library,
+                    Icon::Album,
                     "Saved albums",
                     !self.settings && matches!(self.query, Query::SavedAlbums),
                     Message::Navigate(Route::browse(Query::SavedAlbums, "Saved albums", None))
                 ),
                 self.nav(
-                    Icon::Library,
+                    Icon::Users,
                     "Followed artists",
                     !self.settings && matches!(self.query, Query::FollowedArtists),
                     Message::Navigate(Route::browse(

@@ -334,7 +334,11 @@ impl Ui {
     }
 
     /// Leading icon and label for a control; just the label for text-icon themes.
-    pub(super) fn icon_label<'a>(&self, which: Icon, label: &'a str) -> Element<'a> {
+    pub(super) fn icon_label<'a>(
+        &self,
+        which: Icon,
+        label: impl text::IntoFragment<'a>,
+    ) -> Element<'a> {
         let mut content = row![].spacing(8).align_y(Alignment::Center);
         if self.palette.icons == Icons::Lucide {
             content = content.push(icons::icon(which, 16.0));

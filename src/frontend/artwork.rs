@@ -189,6 +189,12 @@ impl Ui {
                 };
                 urls.push((url, shape));
             }
+            if let Some(tracks) = &self.artist_top
+                && self.artist_page()
+                && self.on_screen(layout::HERO_HEIGHT, self.popular_height())
+            {
+                urls.extend(tracks.iter().filter_map(Track::artwork_url).map(cover));
+            }
             if let Some(data) = &self.data {
                 let (start, end) = self.browser_window(data);
                 match data {

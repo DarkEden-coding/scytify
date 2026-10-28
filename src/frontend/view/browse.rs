@@ -72,21 +72,7 @@ impl Ui {
                         meta.into(),
                         None,
                     ),
-                    container(if let Query::ArtistAlbums { artist_id } = &self.query {
-                        self.control(self.label("Popular songs"))
-                            .on_press(Message::Navigate(Route::browse(
-                                Query::ArtistTopTracks {
-                                    artist_id: artist_id.clone(),
-                                },
-                                format!("{} · Popular songs", self.title),
-                                self.route_artwork.clone(),
-                            )))
-                    } else {
-                        self.control(self.label("Popular songs"))
-                    })
-                    .height(layout::ARTIST_TOOLS_HEIGHT)
-                    .padding([0.0, CONTENT_PADDING])
-                    .align_y(Alignment::Center),
+                    self.popular_songs(),
                     self.section("Albums"),
                     self.grid(&page.items, data, Shape::Cover, |item, grid| self
                         .album_card(item, grid)),
@@ -202,7 +188,7 @@ impl Ui {
         };
         self.card(
             grid,
-            self.gradient_cover(Icon::Radio, grid.art()),
+            self.gradient_cover(Icon::Sparkles, grid.art()),
             "Discover",
             subtitle.into(),
             Message::Action(Action::PlayDiscover),

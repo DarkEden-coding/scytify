@@ -325,6 +325,27 @@ async fn station(session: &Session, seed: &str) -> Result<Vec<SpotifyId>, AppErr
         .collect())
 }
 
+/// An artist's popular songs in the session's country, from the same metadata Spotify's own
+/// clients show: the Web API no longer serves `top-tracks` in development mode.
+pub(super) async fn artist_top_tracks(
+    session: &Session,
+    artist_id: &SpotifyId,
+) -> Result<Vec<Track>, AppError> {
+    super::api::valid_id(artist_id)?;
+    let uri = SpotifyUri::from_uri(&format!("spotify:artist:{}", artist_id.0))
+        .map_err(|e| unavailable("Popular songs", e))?;
+    let artist = librespot_metadata::Artist::get(session, &uri)
+        .await
+        .map_err(|e| unavailable("Popular songs", e))?;
+    let ids: Vec<SpotifyId> = artist
+        .top_tracks
+        .for_country(&session.country())
+        .iter()
+        .filter_map(|uri| uri.to_id().ok().map(SpotifyId))
+        .collect();
+    Ok(hydrate(session, &ids).await)
+}
+
 /// Full track metadata in the order given; tracks Spotify cannot describe are left out.
 pub(super) async fn hydrate(session: &Session, ids: &[SpotifyId]) -> Vec<Track> {
     let mut tracks = hydrate_positioned(session, ids).await;
@@ -427,6 +448,13 @@ pub(super) async fn fetch(
         Query::PlaylistTracks { playlist_id } => {
             PageData::Tracks(page(playlist_tracks(session, playlist_id).await?, request))
         }
+        Query::ArtistTopTracks { artist_id } => PageData::Tracks(page(
+            artist_top_tracks(session, artist_id).await?,
+            PageRequest {
+                offset: 0,
+                limit: request.limit,
+            },
+        )),
         _ => {
             return Err(safe(
                 ErrorKind::InvalidInput,

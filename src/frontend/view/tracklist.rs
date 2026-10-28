@@ -123,6 +123,37 @@ impl Ui {
         .into()
     }
 
+    /// The artist page's Popular songs: a heading over their rows, right below the header.
+    /// Empty when Spotify refuses them, so the discography is not pushed down by an error.
+    pub(super) fn popular_songs(&self) -> Element<'_> {
+        let Some(tracks) = &self.artist_top else {
+            if self.artist_top_failed {
+                return space().height(0).into();
+            }
+            return column![
+                self.section("Popular songs"),
+                container(self.subdued("Loading…"))
+                    .padding([0.0, CONTENT_PADDING + ROW_PADDING])
+                    .height(self.palette.shape.row_height)
+                    .align_y(Alignment::Center),
+            ]
+            .into();
+        };
+        if tracks.is_empty() {
+            return space().height(0).into();
+        }
+        let columns: Columns = self.columns(false);
+        let mut rows = column![];
+        for index in 0..tracks.len() {
+            rows = rows.push(self.track_row(tracks, 0, index, index, &columns));
+        }
+        column![
+            self.section("Popular songs"),
+            container(rows).padding([0.0, CONTENT_PADDING])
+        ]
+        .into()
+    }
+
     pub(in crate::frontend) fn track_view_active(&self) -> bool {
         !self.track_filter.trim().is_empty() || self.track_sort != track_filter::Sort::Source
     }

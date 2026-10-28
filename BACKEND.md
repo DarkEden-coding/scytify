@@ -6,7 +6,7 @@
 
 `FollowedArtists` translates the cursor-based `me/following?type=artist` response into an offset page by walking cursors from the beginning. It validates cursor progress and advances past skipped raw rows. This can require multiple requests for distant pages. New sign-ins request `user-follow-read`; an older token needs user-initiated sign-out and sign-in to grant the additional read permission. No consent runs automatically.
 
-`ArtistTopTracks` requests `artists/{id}/top-tracks` once, returns a bounded non-paged track list, and reports Spotify permission/unavailable responses explicitly. Its rows play through the existing standalone track source; there is no new artist-context playback contract. HTTP 404 is classified as Unavailable. No artist-follow writes, playlist-edit actions or queue-jump contract were added.
+`ArtistTopTracks` reads the artist's metadata over the playback session when it is enabled (the Web API's `top-tracks` is refused in development mode) and falls back to requesting `artists/{id}/top-tracks` once without it. It returns a bounded non-paged track list, and reports Spotify permission/unavailable responses explicitly. Its rows play through the existing standalone track source; there is no new artist-context playback contract. HTTP 404 is classified as Unavailable. No artist-follow writes, playlist-edit actions or queue-jump contract were added.
 
 Filtering/sorting remain frontend views of loaded source occurrences. The backend keeps the same playlist, album and Liked Songs raw start-offset rules. No OAuth, live library writes, device transfers, installation or external actions were performed during implementation.
 

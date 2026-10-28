@@ -225,6 +225,11 @@ struct Ui {
     mixes_pending: Option<RequestId>,
     /// Why the mixes could not be loaded; Home shows it instead of retrying.
     mixes_failed: Option<String>,
+    /// Popular songs of the artist page, fetched beside its albums. When Spotify refuses
+    /// them the section is left out instead of showing an error above the discography.
+    artist_top: Option<Vec<Track>>,
+    artist_top_pending: Option<RequestId>,
+    artist_top_failed: bool,
     /// Liked Songs total, known once its page has loaded, for the sidebar subtitle.
     liked_count: Option<u64>,
     /// Which shown songs are liked and which albums and playlists are saved.
@@ -380,6 +385,9 @@ impl Ui {
             mixes: None,
             mixes_pending: None,
             mixes_failed: None,
+            artist_top: None,
+            artist_top_pending: None,
+            artist_top_failed: false,
             liked_count: None,
             library: Default::default(),
             history: History::default(),
@@ -524,6 +532,10 @@ impl Ui {
         self.track_filter.clear();
         self.track_sort = track_filter::Sort::Source;
         self.track_menu = None;
+        let artist_top = self.artist_top_pending.take();
+        self.cancel(artist_top);
+        self.artist_top = None;
+        self.artist_top_failed = false;
         if self.home {
             // Refresh the saved-albums shelf with the page; `ensure_shelf` refetches it.
             let shelf = self.shelf_pending.take();
@@ -611,6 +623,30 @@ impl Ui {
         }
         self.shelf_pending = self.send(Action::Fetch {
             query: Query::SavedAlbums,
+            page: PageRequest {
+                offset: 0,
+                limit: SHELF_LIMIT,
+            },
+        });
+    }
+    /// Fetch the popular songs of the artist page once per page load.
+    fn ensure_artist_top(&mut self) {
+        let Query::ArtistAlbums { artist_id } = &self.query else {
+            return;
+        };
+        if self.settings
+            || self.window.is_none()
+            || !matches!(self.state.auth, AuthState::Ready { .. })
+            || self.artist_top.is_some()
+            || self.artist_top_pending.is_some()
+            || self.artist_top_failed
+        {
+            return;
+        }
+        self.artist_top_pending = self.send(Action::Fetch {
+            query: Query::ArtistTopTracks {
+                artist_id: artist_id.clone(),
+            },
             page: PageRequest {
                 offset: 0,
                 limit: SHELF_LIMIT,
@@ -706,6 +742,9 @@ impl Ui {
         self.mixes_pending = None;
         self.mixes = None;
         self.mixes_failed = None;
+        self.artist_top_pending = None;
+        self.artist_top = None;
+        self.artist_top_failed = false;
         self.liked_count = None;
         self.library.clear();
         self.sidebar_pending = None;
@@ -928,6 +967,7 @@ impl Ui {
         let task: Task<Message> = self.reduce(message);
         self.ensure_shelf();
         self.ensure_mixes();
+        self.ensure_artist_top();
         self.fetch_artwork();
         self.check_library();
         if self.notice.is_empty() {
@@ -1157,7 +1197,13 @@ impl Ui {
                         if self.mixes_pending == Some(id) && !early {
                             self.mixes_failed = Some(e.message.clone());
                         }
+                        // The section is left out when refused, so that is no notice.
+                        let omitted: bool = self.artist_top_pending == Some(id);
+                        if omitted && !early {
+                            self.artist_top_failed = true;
+                        }
                         for slot in [
+                            &mut self.artist_top_pending,
                             &mut self.shelf_pending,
                             &mut self.mixes_pending,
                             &mut self.sidebar_pending,
@@ -1180,7 +1226,7 @@ impl Ui {
                                 "{} Checkpoint not confirmed. Use Quit or close again to exit without saving.",
                                 e.message
                             );
-                        } else if !artwork && !early && !(quiet && passing(e.kind)) {
+                        } else if !artwork && !early && !omitted && !(quiet && passing(e.kind)) {
                             self.show_notice(e.message);
                         }
                     }
@@ -1654,7 +1700,13 @@ impl Ui {
     }
     /// Route a page completion to the sidebar, shelf, queue or browser it belongs to.
     fn complete_page(&mut self, id: RequestId, data: PageData) {
-        if self.mixes_pending == Some(id) {
+        if self.artist_top_pending == Some(id) {
+            self.artist_top_pending = None;
+            match data {
+                PageData::Tracks(page) => self.artist_top = Some(page.items),
+                _ => self.artist_top_failed = true,
+            }
+        } else if self.mixes_pending == Some(id) {
             self.mixes_pending = None;
             match data {
                 PageData::Playlists(page) => self.mixes = Some(page.items),
@@ -2029,12 +2081,25 @@ impl Ui {
             playlists,
         }
     }
+    /// Height of the artist page's Popular songs block: a heading over the song rows, one
+    /// row of status while they load, and nothing when Spotify has none to show.
+    fn popular_height(&self) -> f32 {
+        let rows: usize = match &self.artist_top {
+            Some(tracks) => tracks.len(),
+            None if self.artist_top_failed => 0,
+            None => 1,
+        };
+        match rows {
+            0 => 0.0,
+            rows => layout::SECTION_HEADING + rows as f32 * self.palette.shape.row_height,
+        }
+    }
     /// Fixed height of the blocks above the virtualized list of a page.
     fn content_top(&self, data: &PageData) -> f32 {
         match data {
             PageData::Playlists(_) | PageData::Artists(_) => layout::SECTION_HEADING,
             PageData::Albums(_) if self.artist_page() => {
-                layout::HERO_HEIGHT + layout::ARTIST_TOOLS_HEIGHT + layout::SECTION_HEADING
+                layout::HERO_HEIGHT + self.popular_height() + layout::SECTION_HEADING
             }
             PageData::Albums(_) => layout::SECTION_HEADING,
             PageData::Tracks(_) if self.track_hero() => {

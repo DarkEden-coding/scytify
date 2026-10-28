@@ -64,6 +64,14 @@ pub enum Icon {
     Equalizer,
     /// Lyrics view toggle (Lucide `mic-vocal`).
     Lyrics,
+    /// Saved albums (Lucide `album`).
+    Album,
+    /// Followed artists (Lucide `users`).
+    Users,
+    /// Discover (Lucide `sparkles`).
+    Sparkles,
+    /// Copy a link (Lucide `link`).
+    Link,
 }
 
 impl Icon {
@@ -112,6 +120,10 @@ impl Icon {
             Icon::Radio => '\u{e142}',
             Icon::Equalizer => '\u{e55a}',
             Icon::Lyrics => '\u{e349}',
+            Icon::Album => '\u{e03b}',
+            Icon::Users => '\u{e1a4}',
+            Icon::Sparkles => '\u{e412}',
+            Icon::Link => '\u{e102}',
         }
     }
 
@@ -158,6 +170,10 @@ impl Icon {
             Icon::Radio => "Device",
             Icon::Equalizer => "Playing",
             Icon::Lyrics => "Lyrics",
+            Icon::Album => "Albums",
+            Icon::Users => "Artists",
+            Icon::Sparkles => "Discover",
+            Icon::Link => "Link",
         }
     }
 }
