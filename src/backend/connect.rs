@@ -58,22 +58,40 @@ impl Connect {
                             sender.send_replace(Some(parse_cluster(cluster)));
                         }
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        log::warn!("Connect cluster updates failed: {error}");
+                        break;
+                    }
                 }
             }
+            log::warn!("Connect cluster update stream ended");
         });
         Ok(Self {
             spirc,
             device_id,
             observations,
-            runner: tokio::spawn(task),
+            runner: tokio::spawn(async move {
+                task.await;
+                log::warn!("Spirc task exited");
+            }),
             observer,
             session,
         })
     }
 
     pub fn healthy(&self) -> bool {
-        !self.runner.is_finished() && !self.observer.is_finished() && !self.session.is_invalid()
+        let healthy = !self.runner.is_finished()
+            && !self.observer.is_finished()
+            && !self.session.is_invalid();
+        if !healthy {
+            log::warn!(
+                "Connect unhealthy: spirc_finished={} observer_finished={} session_invalid={}",
+                self.runner.is_finished(),
+                self.observer.is_finished(),
+                self.session.is_invalid()
+            );
+        }
+        healthy
     }
 
     /// Local transport is serialized through Spirc so its queue and published state agree.

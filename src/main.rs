@@ -1,11 +1,55 @@
 //! Process startup and shutdown; playback and window state belong to their respective modules.
 use iced::futures::FutureExt;
 use scytify::{backend, contracts, desktop, frontend, migrate};
-use std::{panic::AssertUnwindSafe, time::Duration};
+use std::{io::IsTerminal, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
+
+const DEFAULT_LOG_FILTER: &str = "scytify=info,librespot=warn";
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Directory for the log file: `~/Library/Logs/Scytify` on macOS, the app data dir elsewhere.
+fn log_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        directories::BaseDirs::new().map(|dirs| dirs.home_dir().join("Library/Logs/Scytify"))
+    } else {
+        directories::ProjectDirs::from("dev", "Scytify", "Scytify")
+            .map(|dirs| dirs.data_local_dir().to_owned())
+    }
+}
+
+/// Logs to stderr in a terminal, otherwise to a log file rotated once it passes `MAX_LOG_BYTES`.
+/// Panic messages are logged too, since launchers discard stderr.
+fn init_logging() {
+    let mut builder = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(DEFAULT_LOG_FILTER),
+    );
+    if !std::io::stderr().is_terminal()
+        && let Some(dir) = log_dir()
+        && std::fs::create_dir_all(&dir).is_ok()
+    {
+        let path = dir.join("scytify.log");
+        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_LOG_BYTES) {
+            let _ = std::fs::rename(&path, dir.join("scytify.log.old"));
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        }
+    }
+    builder.init();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {info}");
+        default_hook(info);
+    }));
+    log::info!("Scytify {} starting", env!("CARGO_PKG_VERSION"));
+}
 
 /// Run the native window on the main thread and services on a small asynchronous runtime.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("off")).init();
+    init_logging();
     migrate::run();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -25,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
         {
-            eprintln!("Desktop integration unavailable: {}", error.message);
+            log::error!("Desktop integration unavailable: {}", error.message);
             let _ = desktop_events.send(contracts::Event::Notice(error)).await;
         }
     });
@@ -41,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 retry_after_seconds: None,
             },
         };
-        eprintln!("Backend stopped: {}", error.message);
+        log::error!("Backend stopped: {}", error.message);
         let _ = errors.send(contracts::Event::Notice(error)).await;
     });
     let ui_result = {

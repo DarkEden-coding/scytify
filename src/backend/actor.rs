@@ -263,6 +263,11 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     request_observed_metadata(&state, &metadata, &tokens, &api, auth_epoch, &mut jobs);
                     let _ = port.state.send(state.clone());
                 }
+                if spirc && !healthy {
+                    log::warn!("Spotify Connect session ended; reconnecting on next playback request");
+                    release_playback(&mut player, &mut player_events, &mut state);
+                    let _ = port.state.send(state.clone());
+                }
                 let recent = super::connect::live_recent(polling.last_live, healthy);
                 if !recent && state.connect.source == RemoteSource::Live {
                     state.connect.source = RemoteSource::Polling;
@@ -306,11 +311,8 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                         let _ = port.state.send(state.clone());
                     }
                     None => {
-                        player_events = None;
-                        if let Some(p) = player.take() { p.stop(); }
+                        release_playback(&mut player, &mut player_events, &mut state);
                         state.connect.playback_auth = PlaybackAuth::Failed("Local audio session disconnected; enable playback again to reconnect".into());
-                        state.connect.ensure_local_device(super::transfer::LOCAL_DEVICE_ID, super::connect::device_name(), state.player.volume);
-                        if !state.connect.is_remote() { state.player.status = PlaybackStatus::Stopped; }
                         emit(&port.events, Event::Notice(safe(ErrorKind::Unavailable, "audio player event channel closed")));
                         let _ = port.state.send(state.clone());
                     }
@@ -1358,9 +1360,14 @@ pub(super) fn load_current(
             .map(|e| e.track_id.clone())
             .collect::<Vec<_>>();
         if !tracks.is_empty() {
-            let _ = connect.load(tracks, 0, q.snapshot.position_ms, play);
-            let _ = connect.control(&Action::SetShuffle(q.snapshot.shuffle));
-            let _ = connect.control(&Action::SetRepeat(q.snapshot.repeat));
+            let results = [
+                connect.load(tracks, 0, q.snapshot.position_ms, play),
+                connect.control(&Action::SetShuffle(q.snapshot.shuffle)),
+                connect.control(&Action::SetRepeat(q.snapshot.repeat)),
+            ];
+            for error in results.into_iter().filter_map(Result::err) {
+                log::warn!("Connect queue load failed: {error}");
+            }
         }
         return;
     }
@@ -1376,14 +1383,16 @@ pub(super) fn load_current(
         state.player.status = PlaybackStatus::Loading;
         if let Some(p) = player
             && p.load(&entry.track_id, q.snapshot.position_ms, play)
+                .inspect_err(|error| log::warn!("track load failed: {error}"))
                 .is_ok()
             && let Some(next) = q
                 .snapshot
                 .explicit_queue
                 .first()
                 .or_else(|| q.snapshot.remaining.first())
+            && let Err(error) = p.preload(&next.track_id)
         {
-            let _ = p.preload(&next.track_id);
+            log::warn!("track preload failed: {error}");
         }
     } else {
         state.player.current_entry_id = None;
@@ -1490,7 +1499,9 @@ fn handle_player_event(
                     state.player.position_ms = 0;
                     state.player.status = PlaybackStatus::Loading;
                     state.player.observed_at = observed_at;
-                    let _ = p.load(&e.track_id, 0, true);
+                    if let Err(error) = p.load(&e.track_id, 0, true) {
+                        log::warn!("next track load failed: {error}");
+                    }
                 } else {
                     state.player.status = PlaybackStatus::Stopped;
                 }
@@ -1517,7 +1528,9 @@ fn handle_player_event(
                 state.player.position_ms = 0;
                 state.player.status = PlaybackStatus::Loading;
                 state.player.observed_at = observed_at;
-                let _ = p.load(&e.track_id, 0, true);
+                if let Err(error) = p.load(&e.track_id, 0, true) {
+                    log::warn!("track load after unavailable track failed: {error}");
+                }
             } else {
                 state.player.status = PlaybackStatus::Stopped;
             }
@@ -1696,6 +1709,26 @@ fn validate_artwork_url(u: &url::Url) -> Result<(), AppError> {
     }
 }
 /// Constructs a display-safe application error without secret context.
+/// Drops a dead local player so the next playback request opens a fresh session.
+fn release_playback(
+    player: &mut Option<playback::Playback>,
+    player_events: &mut Option<librespot_playback::player::PlayerEventChannel>,
+    state: &mut AppState,
+) {
+    *player_events = None;
+    if let Some(p) = player.take() {
+        p.stop();
+    }
+    state.connect.ensure_local_device(
+        super::transfer::LOCAL_DEVICE_ID,
+        super::connect::device_name(),
+        state.player.volume,
+    );
+    if !state.connect.is_remote() {
+        state.player.status = PlaybackStatus::Stopped;
+    }
+}
+
 pub(super) fn safe(kind: ErrorKind, message: &str) -> AppError {
     AppError {
         kind,
