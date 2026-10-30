@@ -22,6 +22,7 @@ mod styles;
 pub mod theme;
 mod tint;
 mod track_filter;
+mod update;
 mod view;
 use crate::{app_icon, contracts::*, domain::*};
 use iced::futures::SinkExt;
@@ -110,6 +111,11 @@ enum Message {
     SeekReleased,
     Shortcut(shortcuts::Shortcut),
     Settings,
+    CheckUpdate,
+    UpdateChecked(bool),
+    /// Pull and reinstall from the checkout this was built from.
+    Update,
+    UpdateFailed(String),
     Queue,
     QueueScroll(f32, f32, bool),
     QueueMore,
@@ -272,6 +278,10 @@ struct Ui {
     requests: HashMap<RequestId, u64>,
     search: String,
     search_generation: u64,
+    /// The checkout this was built from is behind its upstream branch.
+    update_available: bool,
+    /// Pull and reinstall is running.
+    updating: bool,
     settings: bool,
     queue: bool,
     /// Connect device picker is open.
@@ -340,6 +350,8 @@ impl Ui {
             disconnected: false,
             quit_pending: None,
             quit_failed: false,
+            update_available: false,
+            updating: false,
             active: HashSet::new(),
             artwork: Default::default(),
             window_size,
@@ -470,7 +482,11 @@ impl Ui {
         let (_, open): (window::Id, Task<window::Id>) = window::open(ui.window_settings());
         (
             ui,
-            Task::batch([Task::run(stream, |m| m), open.map(Message::Opened)]),
+            Task::batch([
+                Task::run(stream, |m| m),
+                open.map(Message::Opened),
+                Task::perform(update::check(), Message::UpdateChecked),
+            ]),
         )
     }
     /// Send without blocking; expose bounded-channel overload instead of spawning send tasks.
@@ -1402,6 +1418,26 @@ impl Ui {
                 route.settings = !route.settings;
                 self.navigate(route);
             }
+            Message::CheckUpdate => {
+                if !self.updating {
+                    return Task::perform(update::check(), Message::UpdateChecked);
+                }
+            }
+            Message::UpdateChecked(available) => self.update_available = available,
+            Message::Update => {
+                if !self.updating {
+                    self.updating = true;
+                    return Task::perform(update::install(), |result| match result {
+                        Ok(()) => Message::CheckUpdate,
+                        Err(error) => Message::UpdateFailed(error),
+                    });
+                }
+            }
+            Message::UpdateFailed(error) => {
+                self.updating = false;
+                log::error!("{error}");
+                self.show_notice(error);
+            }
             Message::Scroll(y, height) => {
                 self.scroll = y;
                 self.main_size.height = height;
@@ -1816,6 +1852,7 @@ impl Ui {
         let events: Subscription<Message> = Subscription::batch([
             window::events().map(|(id, event)| Message::Window(id, event)),
             iced::event::listen_with(shortcut),
+            iced::time::every(update::CHECK_INTERVAL).map(|_| Message::CheckUpdate),
         ]);
         let events: Subscription<Message> = if self.split_drag.is_some() {
             Subscription::batch([events, iced::event::listen_with(split_drag)])

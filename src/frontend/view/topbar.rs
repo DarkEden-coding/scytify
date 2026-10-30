@@ -54,7 +54,15 @@ impl Ui {
             .push(space().width(p.shape.spacing))
             // Shrinks before anything else so the window buttons never clip on narrow windows.
             .push(container(search).width(Length::Fill).max_width(380.0))
-            .push(space().width(Length::Fill))
+            .push(space().width(Length::Fill));
+        if self.update_available {
+            let mut update = self.icon_button(Icon::Update, 20.0, true, Message::Update);
+            if self.updating {
+                update = update.on_press_maybe(None);
+            }
+            bar = bar.push(update);
+        }
+        bar = bar
             .push(self.icon_button(Icon::Settings, 20.0, self.settings, Message::Settings));
         let mut padding = iced::Padding::from([0.0, layout::CONTENT_PADDING - 8.0]);
         if custom {

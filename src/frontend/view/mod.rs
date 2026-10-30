@@ -234,6 +234,7 @@ impl Ui {
             Icon::Library => "Your library",
             Icon::Search => "Search",
             Icon::Settings => "Settings",
+            Icon::Update => "Update available: pull and reinstall",
             Icon::Home => "Home",
             Icon::ChevronLeft => "Back",
             Icon::ChevronRight => "Forward",
