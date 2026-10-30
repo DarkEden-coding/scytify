@@ -325,6 +325,52 @@ impl Api {
         response_json(r).await.map(drop).map_err(library_scope)
     }
 
+    /// Add a song to the end of a playlist, or remove every occurrence of it.
+    pub(crate) async fn set_in_playlist(
+        &self,
+        token: &str,
+        playlist_id: &SpotifyId,
+        track_id: &SpotifyId,
+        added: bool,
+    ) -> Result<(), AppError> {
+        let uri = format!("spotify:track:{}", valid_id(track_id)?);
+        let (method, body) = if added {
+            (reqwest::Method::POST, serde_json::json!({ "uris": [uri] }))
+        } else {
+            (
+                reqwest::Method::DELETE,
+                serde_json::json!({ "items": [{ "uri": uri }] }),
+            )
+        };
+        let url = format!(
+            "{}/playlists/{}/items",
+            self.catalog_base_url,
+            valid_id(playlist_id)?
+        );
+        let r = self
+            .http
+            .request(method, url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|_| err(ErrorKind::Network, "Spotify is unreachable"))?;
+        if r.status().is_success() {
+            return Ok(());
+        }
+        response_json(r).await.map(drop).map_err(|e| {
+            if e.kind == ErrorKind::Permission {
+                err(
+                    ErrorKind::Permission,
+                    "Editing playlists needs new Spotify permission, or you can't edit this playlist; sign out and sign in again",
+                )
+            } else {
+                e
+            }
+        })
+    }
+
     /// Whether each item is in Your Library, in request order. The endpoint takes at most
     /// `LIBRARY_CHECK_PAGE` URIs, so longer lists are asked about in concurrent chunks.
     pub(crate) async fn check_saved(

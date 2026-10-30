@@ -186,6 +186,13 @@ pub enum Action {
         item: LibraryItem,
         saved: bool,
     },
+    /// Add a song to (`added`) or remove every occurrence of it from a playlist the user
+    /// can edit. Needs `playlist-modify-public` or `playlist-modify-private`.
+    SetInPlaylist {
+        playlist_id: SpotifyId,
+        track_id: SpotifyId,
+        added: bool,
+    },
     /// Whether each item is in Your Library. Answers `Response::Saved` in the same order;
     /// at most `MAX_SAVED_CHECK` items.
     CheckSaved(Vec<LibraryItem>),

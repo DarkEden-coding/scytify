@@ -51,6 +51,11 @@ impl Ui {
             },
             Message::ToggleSaved(library::Entry::Track(track.clone())),
         ));
+        actions = actions.push(self.menu_item(
+            Icon::CirclePlus,
+            "Add to playlist",
+            Message::SaveSheet(Box::new(track.clone())),
+        ));
         if let Some(album) = &track.album {
             actions = actions.push(self.menu_item(
                 Icon::Album,

@@ -458,7 +458,7 @@ pub(super) fn handle_command(
             handles.insert(id, h);
             None
         }
-        Action::SetSaved { .. } | Action::CheckSaved(_) => {
+        Action::SetSaved { .. } | Action::SetInPlaylist { .. } | Action::CheckSaved(_) => {
             if matches!(&action, Action::CheckSaved(items) if items.len() > MAX_SAVED_CHECK) {
                 return Some(Err(safe(ErrorKind::InvalidInput, "too many library items")));
             }
@@ -473,6 +473,14 @@ pub(super) fn handle_command(
                 let result = match action {
                     Action::SetSaved { item, saved } => a
                         .set_saved(&token, &item, saved)
+                        .await
+                        .map(|()| Response::Accepted),
+                    Action::SetInPlaylist {
+                        playlist_id,
+                        track_id,
+                        added,
+                    } => a
+                        .set_in_playlist(&token, &playlist_id, &track_id, added)
                         .await
                         .map(|()| Response::Accepted),
                     Action::CheckSaved(items) => {

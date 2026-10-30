@@ -12,6 +12,7 @@ mod navigation;
 mod paging;
 mod pending_play;
 mod persistence;
+mod playlist_edit;
 mod search;
 mod shortcuts;
 mod sidebar;
@@ -88,6 +89,11 @@ enum Message {
     PlaySelected,
     TrackMenu(Box<Track>),
     CloseTrackMenu,
+    /// Open the "Save in" sheet of a song, closing its action sheet.
+    SaveSheet(Box<Track>),
+    CloseSaveSheet,
+    /// Add a song to a playlist, or remove it if it is there: (playlist, song).
+    ToggleInPlaylist(SpotifyId, SpotifyId),
     CopyLink(String),
     RetryShelves,
     TogglePlayback,
@@ -234,6 +240,7 @@ struct Ui {
     liked_count: Option<u64>,
     /// Which shown songs are liked and which albums and playlists are saved.
     library: library::Library,
+    playlist_edits: playlist_edit::PlaylistEdits,
     history: History,
     data: Option<PageData>,
     /// A failed main-page load stays visible after its notice expires.
@@ -250,6 +257,8 @@ struct Ui {
     track_filter: String,
     track_sort: track_filter::Sort,
     track_menu: Option<Box<Track>>,
+    /// Song whose "Save in" sheet is open: Liked Songs, its album and the user's playlists.
+    save_sheet: Option<Box<Track>>,
     queue_data: Option<PageData>,
     queue_pending: Option<RequestId>,
     queue_more: Option<RequestId>,
@@ -390,6 +399,7 @@ impl Ui {
             artist_top_failed: false,
             liked_count: None,
             library: Default::default(),
+            playlist_edits: Default::default(),
             history: History::default(),
             data: None,
             page_error: None,
@@ -404,6 +414,7 @@ impl Ui {
             track_filter: String::new(),
             track_sort: track_filter::Sort::Source,
             track_menu: None,
+            save_sheet: None,
             queue_data: None,
             queue_pending: None,
             queue_more: None,
@@ -532,6 +543,7 @@ impl Ui {
         self.track_filter.clear();
         self.track_sort = track_filter::Sort::Source;
         self.track_menu = None;
+        self.save_sheet = None;
         let artist_top = self.artist_top_pending.take();
         self.cancel(artist_top);
         self.artist_top = None;
@@ -747,6 +759,7 @@ impl Ui {
         self.artist_top_failed = false;
         self.liked_count = None;
         self.library.clear();
+        self.playlist_edits.clear();
         self.sidebar_pending = None;
         self.sidebar_more = None;
         self.queue_pending = None;
@@ -1165,7 +1178,7 @@ impl Ui {
                     self.follow_lyrics();
                     return Task::none();
                 }
-                if self.complete_library(id, &result) {
+                if self.complete_library(id, &result) || self.complete_playlist_edit(id, &result) {
                     return Task::none();
                 }
                 let quiet: bool = self.quiet.remove(&id);
@@ -1420,6 +1433,14 @@ impl Ui {
             }
             Message::TrackMenu(track) => self.track_menu = Some(track),
             Message::CloseTrackMenu => self.track_menu = None,
+            Message::SaveSheet(track) => {
+                self.track_menu = None;
+                self.save_sheet = Some(track);
+            }
+            Message::CloseSaveSheet => self.save_sheet = None,
+            Message::ToggleInPlaylist(playlist_id, track_id) => {
+                self.toggle_in_playlist(playlist_id, track_id);
+            }
             Message::CopyLink(link) => {
                 self.track_menu = None;
                 return iced::clipboard::write(link);
@@ -1451,7 +1472,11 @@ impl Ui {
                 }
             }
             Message::RowMove(down) => {
-                if self.settings || self.home || self.track_menu.is_some() {
+                if self.settings
+                    || self.home
+                    || self.track_menu.is_some()
+                    || self.save_sheet.is_some()
+                {
                     return Task::none();
                 }
                 if let Some(PageData::Tracks(page)) = &self.data {
@@ -1483,7 +1508,11 @@ impl Ui {
                 }
             }
             Message::PlaySelected => {
-                if self.settings || self.home || self.track_menu.is_some() {
+                if self.settings
+                    || self.home
+                    || self.track_menu.is_some()
+                    || self.save_sheet.is_some()
+                {
                     return Task::none();
                 }
                 if let Some(PageData::Tracks(page)) = &self.data
@@ -1997,6 +2026,10 @@ impl Ui {
             Shortcut::ZoomOut => return self.set_zoom(chrome::step_zoom(self.zoom, false)),
             Shortcut::ZoomReset => return self.set_zoom(1.0),
             Shortcut::Escape => {
+                if self.save_sheet.is_some() {
+                    self.save_sheet = None;
+                    return Task::none();
+                }
                 if self.track_menu.is_some() {
                     self.track_menu = None;
                     return Task::none();

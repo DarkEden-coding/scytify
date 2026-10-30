@@ -5,6 +5,7 @@ mod devices;
 mod lyrics;
 mod player;
 mod queue;
+mod save_sheet;
 mod search;
 mod settings;
 mod sidebar;
@@ -84,6 +85,9 @@ impl Ui {
         }
         if let Some(track) = &self.track_menu {
             layers = layers.push(self.track_actions(track));
+        }
+        if let Some(track) = &self.save_sheet {
+            layers = layers.push(self.save_sheet(track));
         }
         self.with_resize_grips(layers.into())
     }
@@ -265,16 +269,20 @@ impl Ui {
             (Icons::Lucide, false) => icons::icon(Icon::Heart, 16.0).into(),
             (Icons::Text, _) => self.label(if liked { "Liked" } else { "Like" }).into(),
         };
-        let tip: &str = if liked {
-            "Remove from Liked Songs"
+        // Like Spotify, the first press likes the song; once liked, it opens the save sheet.
+        let (tip, message): (&str, Message) = if liked {
+            ("Save in…", Message::SaveSheet(Box::new(track.clone())))
         } else {
-            "Add to Liked Songs"
+            (
+                "Add to Liked Songs",
+                Message::ToggleSaved(library::Entry::Track(track.clone())),
+            )
         };
         self.tip(
             button(content)
                 .padding(6)
                 .style(styles::icon_button(p, liked))
-                .on_press(Message::ToggleSaved(library::Entry::Track(track.clone()))),
+                .on_press(message),
             tip,
         )
     }

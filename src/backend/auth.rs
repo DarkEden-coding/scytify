@@ -16,10 +16,11 @@ const REDIRECT_PORT: u16 = 43817;
 /// The redirect users register in their developer app; it must match the port above.
 pub const REDIRECT_URI: &str = "http://127.0.0.1:43817/callback";
 /// Reading permissions, plus saving to Your Library (`user-library-modify`, and
-/// `playlist-modify-public` for following playlists). Adding one requires existing users to
+/// `playlist-modify-public` for following playlists) and adding songs to playlists
+/// (`playlist-modify-public`, `playlist-modify-private`). Adding one requires existing users to
 /// sign in again; library endpoints report that as a Permission error instead of failing
 /// silently.
-const SCOPES: &str = "playlist-read-private playlist-read-collaborative user-read-private user-library-read user-library-modify playlist-modify-public user-follow-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state user-read-currently-playing";
+const SCOPES: &str = "playlist-read-private playlist-read-collaborative user-read-private user-library-read user-library-modify playlist-modify-public playlist-modify-private user-follow-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state user-read-currently-playing";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Tokens {

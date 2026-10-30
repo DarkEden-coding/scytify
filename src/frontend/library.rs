@@ -192,12 +192,18 @@ impl Ui {
         }
         true
     }
-    /// Library items on screen: the playing song, song rows, and the album or playlist
+    /// Library items on screen: the playing song, the save sheet's song and album, song rows, and the album or playlist
     /// whose page is open.
     fn shown_library_items(&self) -> Vec<LibraryItem> {
         let mut items: Vec<LibraryItem> = Vec::new();
         if let Some(track) = &self.state.player.current {
             items.push(LibraryItem::Track(track.id.clone()));
+        }
+        if let Some(track) = &self.save_sheet {
+            items.push(LibraryItem::Track(track.id.clone()));
+            if let Some(album) = &track.album {
+                items.push(LibraryItem::Album(album.id.clone()));
+            }
         }
         if self.settings {
             return items;
