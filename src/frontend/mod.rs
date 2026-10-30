@@ -111,11 +111,15 @@ enum Message {
     SeekReleased,
     Shortcut(shortcuts::Shortcut),
     Settings,
+    /// Open listening stats, or reload them while open.
+    Stats,
     CheckUpdate,
     UpdateChecked(bool),
     /// Pull and reinstall from the checkout this was built from.
     Update,
     UpdateFailed(String),
+    /// Show listening stats over another range, in place.
+    StatsRange(StatsRange),
     Queue,
     QueueScroll(f32, f32, bool),
     QueueMore,
@@ -882,6 +886,10 @@ impl Ui {
         }
         self.send(Action::BeginLogin);
     }
+    /// Whether the main view shows listening stats.
+    fn stats_open(&self) -> bool {
+        !self.settings && matches!(self.query, Query::ListeningStats { .. })
+    }
     /// The place the main view currently shows.
     fn route(&self) -> Route {
         Route {
@@ -1418,6 +1426,13 @@ impl Ui {
                 route.settings = !route.settings;
                 self.navigate(route);
             }
+            Message::Stats => {
+                if self.stats_open() {
+                    self.fetch();
+                } else {
+                    self.navigate(Route::stats(StatsRange::default()));
+                }
+            }
             Message::CheckUpdate => {
                 if !self.updating {
                     return Task::perform(update::check(), Message::UpdateChecked);
@@ -1438,6 +1453,7 @@ impl Ui {
                 log::error!("{error}");
                 self.show_notice(error);
             }
+            Message::StatsRange(range) => self.go(Route::stats(range)),
             Message::Scroll(y, height) => {
                 self.scroll = y;
                 self.main_size.height = height;
@@ -2181,7 +2197,7 @@ impl Ui {
             PageData::Tracks(_) => {
                 layout::SECTION_HEADING + layout::TABLE_HEADER + layout::TRACK_TOOLS_HEIGHT
             }
-            PageData::Search(_) | PageData::Queue { .. } => 0.0,
+            PageData::Search(_) | PageData::Queue { .. } | PageData::Stats(_) => 0.0,
         }
     }
     /// Visible window of the main browser page in list slots, loaded or not: cards for
@@ -2213,6 +2229,8 @@ impl Ui {
                 Some(top) => block(results.tracks.len().min(layout::SEARCH_SONGS), top.height()),
                 None => (0, 0),
             },
+            // A short, unvirtualized page.
+            PageData::Stats(_) => (0, slots),
             PageData::Playlists(_) | PageData::Artists(_) | PageData::Albums(_) => {
                 layout::visible_grid(slots, offset, self.main_size.height, self.grid_layout())
             }

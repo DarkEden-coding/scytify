@@ -242,6 +242,12 @@ impl Ui {
                             .filter_map(|x| x.track.as_ref()?.artwork_url())
                             .map(cover),
                     ),
+                    PageData::Stats(s) => urls.extend(
+                        s.top_tracks
+                            .iter()
+                            .filter_map(|r| r.track.artwork_url())
+                            .map(cover),
+                    ),
                     PageData::Search(r) => {
                         let layout = self.search_layout(r);
                         let (columns, shelf) = (self.grid_layout().columns, self.shelf_height());

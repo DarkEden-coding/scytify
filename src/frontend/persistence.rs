@@ -85,6 +85,7 @@ impl Preferences {
                 | "saved-albums"
                 | "followed-artists"
                 | "made-for-you"
+                | "stats"
         ) || p.title.len() > 1024
             || p.key.len() > 1024
             || p.artwork.as_ref().is_some_and(|a| a.len() > 1024)
@@ -153,6 +154,12 @@ impl Preferences {
             "saved-albums" => Query::SavedAlbums,
             "followed-artists" => Query::FollowedArtists,
             "made-for-you" => Query::MadeForYou,
+            "stats" => Query::ListeningStats {
+                range: StatsRange::ALL
+                    .into_iter()
+                    .find(|r| r.key() == self.key)
+                    .unwrap_or_default(),
+            },
             _ => Query::OwnPlaylists,
         };
         // "library" (also written by older versions) is Home; "playlists" its full grid.
@@ -231,6 +238,7 @@ impl Preferences {
             Query::SavedAlbums => ("saved-albums", String::new()),
             Query::FollowedArtists => ("followed-artists", String::new()),
             Query::MadeForYou => ("made-for-you", String::new()),
+            Query::ListeningStats { range } => ("stats", range.key().into()),
             Query::OwnPlaylists if !ui.home => ("playlists", String::new()),
             _ => ("library", String::new()),
         };

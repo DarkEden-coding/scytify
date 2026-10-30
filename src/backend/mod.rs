@@ -9,6 +9,7 @@ mod playback;
 mod playback_auth;
 mod queue;
 mod remote;
+mod stats;
 mod storage;
 mod transfer;
 

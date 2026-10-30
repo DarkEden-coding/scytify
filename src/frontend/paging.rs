@@ -25,6 +25,7 @@ pub fn page_info(data: &PageData) -> (usize, Option<u64>, bool) {
             None,
             false,
         ),
+        PageData::Stats(s) => (s.top_tracks.len(), None, false),
     }
 }
 
@@ -36,7 +37,7 @@ pub fn first_offset(data: &PageData) -> u64 {
         PageData::Artists(p) => p.offset,
         PageData::Albums(p) => p.offset,
         PageData::Queue { page: p, .. } => p.offset,
-        PageData::Search(_) => 0,
+        PageData::Search(_) | PageData::Stats(_) => 0,
     }
 }
 
@@ -50,7 +51,7 @@ pub fn next_offset(data: &PageData) -> u64 {
         PageData::Artists(p) => p.next_offset,
         PageData::Albums(p) => p.next_offset,
         PageData::Queue { page: p, .. } => p.next_offset,
-        PageData::Search(_) => 0,
+        PageData::Search(_) | PageData::Stats(_) => 0,
     }
 }
 

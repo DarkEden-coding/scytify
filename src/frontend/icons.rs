@@ -72,6 +72,8 @@ pub enum Icon {
     Sparkles,
     /// Copy a link (Lucide `link`).
     Link,
+    /// Listening stats (Lucide `chart-column`, `bar-chart-3` in this font).
+    Stats,
     /// Pull and install a newer build (Lucide `circle-arrow-down`).
     Update,
 }
@@ -126,6 +128,7 @@ impl Icon {
             Icon::Users => '\u{e1a4}',
             Icon::Sparkles => '\u{e412}',
             Icon::Link => '\u{e102}',
+            Icon::Stats => '\u{e2a3}',
             Icon::Update => '\u{e078}',
         }
     }
@@ -177,6 +180,7 @@ impl Icon {
             Icon::Users => "Artists",
             Icon::Sparkles => "Discover",
             Icon::Link => "Link",
+            Icon::Stats => "Stats",
             Icon::Update => "Update",
         }
     }

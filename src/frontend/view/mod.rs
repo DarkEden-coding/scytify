@@ -9,6 +9,7 @@ mod save_sheet;
 mod search;
 mod settings;
 mod sidebar;
+mod stats;
 mod topbar;
 mod track_actions;
 mod tracklist;
@@ -234,6 +235,7 @@ impl Ui {
             Icon::Library => "Your library",
             Icon::Search => "Search",
             Icon::Settings => "Settings",
+            Icon::Stats => "Your listening stats",
             Icon::Update => "Update available: pull and reinstall",
             Icon::Home => "Home",
             Icon::ChevronLeft => "Back",

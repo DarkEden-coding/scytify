@@ -91,10 +91,11 @@ impl Ui {
                 _ => column![].into(),
             },
             PageData::Queue { .. } => column![].into(),
+            PageData::Stats(stats) => self.stats_view(stats),
         };
         let mut page = column![content];
-        // Home shelves carry their own empty states.
-        if !self.home && paging::slots(data) == 0 {
+        // Home shelves and stats carry their own empty states.
+        if !self.home && !matches!(data, PageData::Stats(_)) && paging::slots(data) == 0 {
             page = page.push(self.empty_page());
         }
         self.scroll_page(page.into())

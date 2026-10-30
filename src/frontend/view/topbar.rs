@@ -1,4 +1,4 @@
-//! App icon, history arrows, search, the queue/settings toggles and the window buttons above
+//! App icon, history arrows, search, the stats/settings toggles and the window buttons above
 //! the main view. With the custom title bar, empty space in the bar drags the window.
 use super::*;
 use iced::widget::{image, mouse_area, rule, text_input};
@@ -63,6 +63,7 @@ impl Ui {
             bar = bar.push(update);
         }
         bar = bar
+            .push(self.icon_button(Icon::Stats, 20.0, self.stats_open(), Message::Stats))
             .push(self.icon_button(Icon::Settings, 20.0, self.settings, Message::Settings));
         let mut padding = iced::Padding::from([0.0, layout::CONTENT_PADDING - 8.0]);
         if custom {

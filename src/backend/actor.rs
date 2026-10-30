@@ -1,4 +1,4 @@
-use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, storage};
+use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, stats, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -136,6 +136,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     observation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut polling = super::remote::Polling::new();
     let mut discovery = discover::State::default();
+    let mut listening = stats::Recorder::default();
 
     let mut logged_auth = (String::new(), PlaybackAuth::default());
     loop {
@@ -171,11 +172,13 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
             command = port.commands.recv(), if port.events.capacity() > 0 || port.commands.is_closed() => {
                 let Some(command) = command else {
                     jobs.abort_all(); if let Some(p) = &player { p.stop(); }
+                    listening.finish(&store, std::time::Instant::now());
                     return store.save_session(&q.snapshot).map_err(|e| safe(ErrorKind::Internal, &e));
                 };
                 let id = command.id;
                 if matches!(command.action, Action::Quit) {
                     jobs.abort_all(); if let Some(p) = &player { p.stop(); }
+                    listening.finish(&store, std::time::Instant::now());
                     store.save_session(&q.snapshot).map_err(|e| safe(ErrorKind::Internal, &e))?;
                     emit_shutdown(&port.events, id).await; return Ok(());
                 }
@@ -237,6 +240,8 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                 }
             }
             _ = observation_tick.tick() => {
+                let now = std::time::Instant::now();
+                listening.observe(&state.player, playback::position_at(&state.player, now), now, &store);
                 if follow_discovery(auth_epoch, &mut discovery, &api, &store, &q, &mut state, &tokens, &player, &mut jobs) {
                     let _ = port.state.send(state.clone());
                 }
@@ -295,6 +300,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
             }
             _ = port.events.closed() => {
                 jobs.abort_all(); if let Some(p) = &player { p.stop(); }
+                listening.finish(&store, std::time::Instant::now());
                 return store.save_session(&q.snapshot).map_err(|e| safe(ErrorKind::Internal, &e));
             }
             event = async { match player_events.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
@@ -324,6 +330,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     if let Some(p) = &player {
         p.stop();
     }
+    listening.finish(&store, std::time::Instant::now());
     store
         .save_session(&q.snapshot)
         .map_err(|e| safe(ErrorKind::Internal, &e))

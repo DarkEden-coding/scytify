@@ -732,3 +732,50 @@ pub fn link(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style + '
         snap: true,
     }
 }
+
+/// Raised block holding one headline number on the stats page.
+pub fn tile(p: &Palette) -> impl Fn(&Theme) -> container::Style + 'static {
+    let p: Palette = *p;
+    move |_| container::Style {
+        background: Some(p.colors.surface_raised.into()),
+        text_color: Some(p.colors.text),
+        border: Border {
+            color: mix(p.colors.surface_raised, p.colors.text, 0.07),
+            width: 1.0,
+            radius: p.shape.radius_large.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Column of a bar chart, rounded at its data end; `strong` marks the one to notice.
+pub fn bar(p: &Palette, strong: bool) -> impl Fn(&Theme) -> container::Style + 'static {
+    let c = p.colors;
+    let color: Color = if strong {
+        c.accent
+    } else {
+        mix(c.accent, c.surface, 0.55)
+    };
+    move |_| container::Style {
+        background: Some(color.into()),
+        border: Border {
+            radius: border::top(4.0),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Horizontal meter: the accent fill, or the rail behind it.
+pub fn meter(p: &Palette, filled: bool) -> impl Fn(&Theme) -> container::Style + 'static {
+    let color: Color = if filled {
+        p.colors.accent
+    } else {
+        p.colors.surface_raised
+    };
+    move |_| container::Style {
+        background: Some(color.into()),
+        border: Border::default().rounded(PILL),
+        ..container::Style::default()
+    }
+}

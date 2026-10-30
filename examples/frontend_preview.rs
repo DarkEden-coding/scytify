@@ -14,6 +14,62 @@ fn page<T: Clone>(items: &[T], request: PageRequest) -> Page<T> {
     }
 }
 
+/// Synthetic listening stats over the fixture's songs; shorter ranges scale them down.
+fn stats(tracks: &[Track], range: StatsRange) -> ListeningStats {
+    let scale: u64 = match range {
+        StatsRange::Week => 1,
+        StatsRange::Month => 4,
+        StatsRange::AllTime => 15,
+    };
+    let top_tracks: Vec<RankedTrack> = tracks
+        .iter()
+        .take(10)
+        .enumerate()
+        .map(|(i, t)| RankedTrack {
+            track: t.clone(),
+            plays: (24 - 2 * i as u64) * scale,
+            listened_ms: (24 - 2 * i as u64) * scale * 190_000,
+        })
+        .collect();
+    let mut top_artists: Vec<RankedArtist> = Vec::new();
+    for ranked in &top_tracks {
+        for artist in &ranked.track.artists {
+            match top_artists.iter_mut().find(|a| a.artist.id == artist.id) {
+                Some(a) => {
+                    a.plays += ranked.plays;
+                    a.listened_ms += ranked.listened_ms;
+                }
+                None => top_artists.push(RankedArtist {
+                    artist: artist.clone(),
+                    plays: ranked.plays,
+                    listened_ms: ranked.listened_ms,
+                }),
+            }
+        }
+    }
+    top_artists.sort_by_key(|a| std::cmp::Reverse(a.listened_ms));
+    let mut by_hour = [0; 24];
+    for (hour, ms) in by_hour.iter_mut().enumerate() {
+        // Quiet nights, a morning commute and a long evening.
+        let shape: u64 = [
+            0, 0, 0, 0, 0, 0, 1, 4, 6, 3, 2, 2, 3, 2, 2, 3, 4, 5, 7, 9, 11, 12, 8, 3,
+        ][hour];
+        *ms = shape * scale * 900_000;
+    }
+    ListeningStats {
+        range,
+        listened_ms: by_hour.iter().sum(),
+        plays: 312 * scale,
+        songs: 141 * scale,
+        artists: 38 * scale,
+        streak_days: 6,
+        longest_streak_days: 19,
+        by_hour,
+        top_tracks,
+        top_artists,
+    }
+}
+
 /// A track listing page whose rows carry their source position, like production pages.
 fn listing(tracks: &[Track], request: PageRequest) -> Page<Track> {
     let mut page: Page<Track> = page(tracks, request);
@@ -544,6 +600,7 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
                     PageData::Playlists(search_page(&catalog.search(&text).playlists, request))
                 }
                 Query::MadeForYou => PageData::Playlists(page(&catalog.playlists, request)),
+                Query::ListeningStats { range } => PageData::Stats(Box::new(stats(tracks, range))),
                 Query::Search { text } => PageData::Search(catalog.search(&text)),
                 Query::SearchArtists { text } => {
                     PageData::Artists(search_page(&catalog.search_artists(&text), request))
@@ -686,14 +743,19 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
 
 /// Seed the isolated frontend preferences so the window opens on a chosen page, for
 /// headless screenshots: home, playlist, album, artist, liked, saved-albums, search,
-/// settings or queue. Search opens with the text in `CS_PREVIEW_QUERY`, or empty.
+/// stats, settings or queue. Search opens with the text in `CS_PREVIEW_QUERY`, or empty.
 /// `CS_PREVIEW_DEVICES=1` opens the device picker and `CS_PREVIEW_SOURCE=polling|unavailable`
-/// changes the Connect source. `CS_PREVIEW_WIDTH` sets the window width (default 1280) to check narrow layouts.
+/// changes the Connect source. `CS_PREVIEW_WIDTH` sets the window width (default 1280) to check narrow layouts, and
+/// `CS_PREVIEW_HEIGHT` its height (default 800) to see long pages whole.
 fn preview_route(route: &str) -> Result<(), Box<dyn std::error::Error>> {
     let query: String = std::env::var("CS_PREVIEW_QUERY").unwrap_or_default();
     let width: f32 = match std::env::var("CS_PREVIEW_WIDTH") {
         Ok(width) => width.parse()?,
         Err(_) => 1280.0,
+    };
+    let height: f32 = match std::env::var("CS_PREVIEW_HEIGHT") {
+        Ok(height) => height.parse()?,
+        Err(_) => 800.0,
     };
     let (kind, key, title, artwork) = match route {
         "home" | "queue" | "settings" | "lyrics" => ("library", "", "Home", ""),
@@ -717,6 +779,7 @@ fn preview_route(route: &str) -> Result<(), Box<dyn std::error::Error>> {
         ),
         "liked" => ("liked", "", "Liked Songs", ""),
         "saved-albums" => ("saved-albums", "", "Saved albums", ""),
+        "stats" => ("stats", "month", "Your stats", ""),
         "search" => ("search", query.as_str(), query.as_str(), ""),
         other => return Err(format!("Unknown CS_PREVIEW_ROUTE {other:?}").into()),
     };
@@ -728,7 +791,7 @@ fn preview_route(route: &str) -> Result<(), Box<dyn std::error::Error>> {
         "title": title,
         "offset": 0,
         "width": width,
-        "height": 800.0,
+        "height": height,
         "settings": route == "settings",
         "queue": route == "queue",
         "lyrics": route == "lyrics",

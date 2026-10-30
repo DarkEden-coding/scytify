@@ -656,7 +656,9 @@ impl Api {
                 Kind::Tracks,
                 page_limit,
             ),
-            Query::Queue { .. } => return Err(err(ErrorKind::InvalidInput, "queue is local")),
+            Query::Queue { .. } | Query::ListeningStats { .. } => {
+                return Err(err(ErrorKind::InvalidInput, "stored locally"));
+            }
             Query::MadeForYou => {
                 return Err(err(
                     ErrorKind::InvalidInput,
@@ -797,7 +799,7 @@ fn page_continues(data: &PageData) -> bool {
         PageData::Tracks(p) => p.has_more,
         PageData::Artists(p) => p.has_more,
         PageData::Albums(p) => p.has_more,
-        PageData::Queue { .. } | PageData::Search(_) => false,
+        PageData::Queue { .. } | PageData::Search(_) | PageData::Stats(_) => false,
     }
 }
 

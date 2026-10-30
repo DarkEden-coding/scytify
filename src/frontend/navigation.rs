@@ -1,5 +1,5 @@
 //! Browser routes and a bounded back/forward history.
-use crate::contracts::Query;
+use crate::contracts::{Query, StatsRange};
 use crate::domain::{Album, Artist, Playlist};
 
 const MAX_HISTORY: usize = 50;
@@ -51,6 +51,10 @@ impl Route {
             playlist_id: playlist.id.clone(),
         };
         Self::browse(query, playlist.name.clone(), playlist.artwork_url.clone())
+    }
+    /// Listening stats recorded on this device.
+    pub fn stats(range: StatsRange) -> Self {
+        Self::browse(Query::ListeningStats { range }, "Your stats", None)
     }
     /// Mixed search overview; empty text shows the search start page without a request.
     pub fn search(text: &str) -> Self {

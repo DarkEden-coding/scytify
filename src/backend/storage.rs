@@ -1,4 +1,4 @@
-use crate::domain::{Lyrics, SessionSnapshot, Settings, SpotifyId};
+use crate::domain::{Lyrics, SessionSnapshot, Settings, SpotifyId, Track};
 use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -29,6 +29,8 @@ impl Storage {
         db.execute_batch("CREATE TABLE IF NOT EXISTS lyrics_cache(track_id TEXT PRIMARY KEY, body BLOB NOT NULL, stored_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);").map_err(|e| e.to_string())?;
         // Not a cache: Discover relies on it to skip songs heard before, so Clear cache keeps it.
         db.execute_batch("CREATE TABLE IF NOT EXISTS listen_history(track_id TEXT PRIMARY KEY, last_heard INTEGER NOT NULL, plays INTEGER NOT NULL);").map_err(|e| e.to_string())?;
+        // Listening stats: one row per listen, and the last known metadata of each song.
+        db.execute_batch("CREATE TABLE IF NOT EXISTS listens(id INTEGER PRIMARY KEY, track_id TEXT NOT NULL, started_at INTEGER NOT NULL, listened_ms INTEGER NOT NULL, counted INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS listens_started ON listens(started_at); CREATE TABLE IF NOT EXISTS listened_tracks(track_id TEXT PRIMARY KEY, body BLOB NOT NULL);").map_err(|e| e.to_string())?;
         let store = Self {
             root: root.to_owned(),
             db,
@@ -172,6 +174,105 @@ impl Storage {
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())
+    }
+    /// Records one listen of a song that started at `started_at`, or updates the listen
+    /// stored before as `row`. Returns the listen's row.
+    pub(crate) fn save_listen(
+        &self,
+        row: Option<i64>,
+        track: &Track,
+        started_at: i64,
+        listened_ms: u64,
+        counted: bool,
+    ) -> Result<i64, String> {
+        let body = serde_json::to_vec(track).map_err(|e| e.to_string())?;
+        self.db
+            .execute(
+                "INSERT INTO listened_tracks(track_id,body) VALUES(?1,?2) ON CONFLICT(track_id) DO UPDATE SET body=excluded.body",
+                params![track.id.0, body],
+            )
+            .map_err(|e| e.to_string())?;
+        if let Some(row) = row {
+            self.db
+                .execute(
+                    "UPDATE listens SET listened_ms=?2,counted=?3 WHERE id=?1",
+                    params![row, listened_ms as i64, counted],
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(row);
+        }
+        self.db
+            .execute(
+                "INSERT INTO listens(track_id,started_at,listened_ms,counted) VALUES(?1,?2,?3,?4)",
+                params![track.id.0, started_at, listened_ms as i64, counted],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(self.db.last_insert_rowid())
+    }
+    /// Each song listened to since `since`, with its total listening time and plays.
+    pub(crate) fn listen_totals(&self, since: i64) -> Result<Vec<(Track, u64, u64)>, String> {
+        let mut statement = self
+            .db
+            .prepare("SELECT t.body, SUM(l.listened_ms), SUM(l.counted) FROM listens l JOIN listened_tracks t ON t.track_id=l.track_id WHERE l.started_at>=?1 GROUP BY l.track_id")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([since], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut totals = Vec::new();
+        for row in rows {
+            let (body, ms, plays) = row.map_err(|e| e.to_string())?;
+            // Skip a song whose stored metadata no longer parses rather than failing all stats.
+            if let Ok(track) = serde_json::from_slice::<Track>(&body) {
+                totals.push((track, ms.max(0) as u64, plays.max(0) as u64));
+            }
+        }
+        Ok(totals)
+    }
+    /// Listening time since `since` by local hour of day when each listen started.
+    pub(crate) fn listen_hours(&self, since: i64) -> Result<[u64; 24], String> {
+        let mut statement = self
+            .db
+            .prepare("SELECT CAST(strftime('%H',started_at,'unixepoch','localtime') AS INTEGER), SUM(listened_ms) FROM listens WHERE started_at>=?1 GROUP BY 1")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut hours = [0; 24];
+        for row in rows {
+            let (hour, ms) = row.map_err(|e| e.to_string())?;
+            if let Some(slot) = usize::try_from(hour).ok().and_then(|h| hours.get_mut(h)) {
+                *slot = ms.max(0) as u64;
+            }
+        }
+        Ok(hours)
+    }
+    /// Local day numbers with at least one play, oldest first, and the day number of `now`.
+    pub(crate) fn listen_days(&self, now: i64) -> Result<(i64, Vec<i64>), String> {
+        // Julian day numbers: consecutive local dates differ by exactly one.
+        const DAY: &str = "CAST(julianday(?1,'unixepoch','localtime')+0.5 AS INTEGER)";
+        let today: i64 = self
+            .db
+            .query_row(&format!("SELECT {DAY}"), [now], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut statement = self
+            .db
+            .prepare(&format!(
+                "SELECT DISTINCT {} FROM listens WHERE counted=1 ORDER BY 1",
+                DAY.replace("?1", "started_at")
+            ))
+            .map_err(|e| e.to_string())?;
+        let days = statement
+            .query_map([], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok((today, days))
     }
     /// Reads and touches a previously validated artwork cache entry.
     pub(crate) fn cached_artwork(&self, key: &str) -> Result<Option<Vec<u8>>, String> {

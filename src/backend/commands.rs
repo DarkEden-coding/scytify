@@ -1,5 +1,5 @@
 use super::actor::{Job, artwork, emit, load_current, login_ready, safe, sync_queue};
-use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, storage};
+use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, stats, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -418,6 +418,13 @@ pub(super) fn handle_command(
                 });
                 handles.insert(id, h);
                 return None;
+            }
+            if let Query::ListeningStats { range } = query {
+                return Some(
+                    stats::summary(store, range, storage::now())
+                        .map(|s| Response::Page(PageData::Stats(Box::new(s))))
+                        .map_err(|e| safe(ErrorKind::Internal, &e)),
+                );
             }
             let (Some(t), AuthState::Ready { user_id }) = (tokens.clone(), state.auth.clone())
             else {

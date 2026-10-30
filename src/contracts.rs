@@ -79,6 +79,75 @@ pub enum Query {
     /// Spotify's personalized playlists (Discover Weekly, Release Radar, Daily Mixes), read
     /// from the home feed over the playback session. One non-paged `PageData::Playlists`.
     MadeForYou,
+    /// Listening recorded on this device. One non-paged `PageData::Stats`; needs no sign-in.
+    ListeningStats {
+        range: StatsRange,
+    },
+}
+
+/// How far back listening stats look.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatsRange {
+    Week,
+    #[default]
+    Month,
+    AllTime,
+}
+
+impl StatsRange {
+    pub const ALL: [StatsRange; 3] = [StatsRange::Week, StatsRange::Month, StatsRange::AllTime];
+
+    /// Stable name for saved preferences.
+    pub fn key(self) -> &'static str {
+        match self {
+            StatsRange::Week => "week",
+            StatsRange::Month => "month",
+            StatsRange::AllTime => "all",
+        }
+    }
+
+    /// Days covered, or `None` for everything recorded.
+    pub fn days(self) -> Option<i64> {
+        match self {
+            StatsRange::Week => Some(7),
+            StatsRange::Month => Some(30),
+            StatsRange::AllTime => None,
+        }
+    }
+}
+
+/// Listening totals and rankings over one `StatsRange`.
+#[derive(Clone, Debug, Default)]
+pub struct ListeningStats {
+    pub range: StatsRange,
+    pub listened_ms: u64,
+    /// Listens that lasted long enough to count as a play.
+    pub plays: u64,
+    pub songs: u64,
+    pub artists: u64,
+    /// Consecutive days with listening, ending today or yesterday; independent of the range.
+    pub streak_days: u64,
+    pub longest_streak_days: u64,
+    /// Listening time by local hour of day, midnight first.
+    pub by_hour: [u64; 24],
+    /// Most played songs, most first.
+    pub top_tracks: Vec<RankedTrack>,
+    /// Most listened artists by time, most first.
+    pub top_artists: Vec<RankedArtist>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RankedTrack {
+    pub track: Track,
+    pub plays: u64,
+    pub listened_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct RankedArtist {
+    pub artist: Artist,
+    pub plays: u64,
+    pub listened_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +161,7 @@ pub enum PageData {
         revision: u64,
         page: Page<QueueItem>,
     },
+    Stats(Box<ListeningStats>),
 }
 
 /// Top matches per type for one search text, each at most `SEARCH_LIMIT` long.
