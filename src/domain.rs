@@ -261,6 +261,33 @@ pub struct AppState {
     pub lyrics_key_set: bool,
     /// Discover is playing and the backend keeps adding new recommendations.
     pub discover_active: bool,
+    /// Sharing listening stats with this user's other devices.
+    pub sync: SyncState,
+}
+
+/// Listening stats shared with other devices over Tailscale.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyncState {
+    pub enabled: bool,
+    /// Code another device enters to link with this one, while this device is reachable.
+    pub code: Option<String>,
+    /// Why other devices cannot reach this one, such as Tailscale not running.
+    pub problem: Option<String>,
+    pub peers: Vec<SyncPeer>,
+    /// Changes whenever listening from another device is added, so open stats can reload.
+    pub revision: u64,
+}
+
+/// Another device listening stats are exchanged with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyncPeer {
+    pub device_id: String,
+    /// Tailscale address and port.
+    pub address: String,
+    /// Seconds since the epoch of the last successful exchange.
+    pub last_synced: Option<i64>,
+    /// Why the last exchange failed.
+    pub error: Option<String>,
 }
 
 /// Backend validates ranges; default total cache limit is 1_000_000_000 bytes.

@@ -11,6 +11,7 @@ mod queue;
 mod remote;
 mod stats;
 mod storage;
+mod sync;
 mod transfer;
 
 use crate::{contracts::*, domain::*};
@@ -38,6 +39,7 @@ pub fn initial_state() -> AppState {
         cache_limit_bytes: 1_000_000_000,
         lyrics_key_set: false,
         discover_active: false,
+        sync: Default::default(),
     }
 }
 

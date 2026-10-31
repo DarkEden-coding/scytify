@@ -1,9 +1,9 @@
 //! Listening stats page: headline numbers, listening by hour of day, and the most played
-//! songs and artists, all recorded on this device.
+//! songs and artists, recorded on this device and any devices linked over Tailscale.
 use super::*;
 use crate::frontend::artwork::Shape;
 use crate::frontend::layout::{CONTENT_PADDING, SECTION_HEADING};
-use iced::widget::{column, mouse_area, rule};
+use iced::widget::{column, mouse_area, rule, text_input};
 
 /// Width of one headline tile; tiles wrap onto more rows in narrow windows.
 const TILE_WIDTH: f32 = 168.0;
@@ -24,6 +24,9 @@ impl Ui {
     pub(super) fn stats_view<'a>(&'a self, stats: &'a ListeningStats) -> Element<'a> {
         let p: &Palette = &self.palette;
         let mut page = column![self.stats_header(stats.range)].spacing(p.shape.spacing * 2.0);
+        if self.sync_open {
+            page = page.push(container(self.sync_panel()).padding([0.0, CONTENT_PADDING]));
+        }
         if stats.listened_ms == 0 {
             let hint: &'static str = if stats.range == StatsRange::AllTime {
                 "Play some music and your stats will build up here."
@@ -83,16 +86,128 @@ impl Ui {
                     .on_press(Message::StatsRange(choice)),
             );
         }
+        let linked: usize = if self.state.sync.enabled {
+            self.state.sync.peers.len()
+        } else {
+            0
+        };
+        let devices = button(self.icon_label(Icon::Devices, "Linked devices"))
+            .padding([7.0, 14.0])
+            .style(styles::choice(p, self.sync_open))
+            .on_press(Message::SyncPanel);
+        let source: String = match linked {
+            0 => "Recorded on this device whenever Scytify sees music playing.".into(),
+            1 => "Combined from this device and 1 linked device.".into(),
+            n => format!("Combined from this device and {n} linked devices."),
+        };
         column![
             text("Your stats")
                 .font(p.bold_font())
                 .size(p.font_size.display),
-            self.subdued("Recorded on this device whenever Scytify sees music playing."),
-            container(ranges).padding(iced::Padding::ZERO.top(p.shape.spacing)),
+            self.subdued(source),
+            container(
+                row![ranges, space().width(Length::Fill), devices].align_y(Alignment::Center)
+            )
+            .padding(iced::Padding::ZERO.top(p.shape.spacing)),
         ]
         .spacing(6)
         .padding(iced::Padding::new(CONTENT_PADDING).bottom(0.0))
         .into()
+    }
+
+    /// Turning sync on, this device's link code, linking another device, and the linked
+    /// devices with how their last exchange went.
+    fn sync_panel(&self) -> Element<'_> {
+        let p: &Palette = &self.palette;
+        let sync: &SyncState = &self.state.sync;
+        let sync_action = |action: SyncAction| Message::Action(Action::Sync(action));
+        let mut panel = column![self.heading("Linked devices")].spacing(p.shape.spacing * 1.5);
+        if let Some(problem) = &sync.problem {
+            panel = panel.push(self.label(problem.as_str()).color(p.colors.error));
+        }
+        if !sync.enabled {
+            panel = panel.push(self.subdued(
+                "Combine stats from your other computers. Each needs Scytify and Tailscale, signed in to the same tailnet.",
+            ));
+            panel = panel.push(row![
+                self.primary("Turn on sync", sync_action(SyncAction::Enable(true)))
+            ]);
+            return container(panel)
+                .padding(p.shape.padding)
+                .style(styles::tile(p))
+                .into();
+        }
+        let code: Element<'_> = match &sync.code {
+            Some(code) => row![
+                container(self.strong(code.as_str()).wrapping(Wrapping::Glyph)).width(Length::Fill),
+                self.control(self.label("Copy"))
+                    .on_press(Message::CopyLink(code.clone())),
+            ]
+            .spacing(p.shape.spacing)
+            .align_y(Alignment::Center)
+            .into(),
+            None => self.subdued("Waiting for Tailscale…").into(),
+        };
+        panel = panel.push(
+            column![
+                self.subdued("To link another device, enter this device's code there"),
+                code
+            ]
+            .spacing(6),
+        );
+        panel = panel.push(
+            row![
+                text_input("Paste a code from another device", &self.sync_code)
+                    .on_input(Message::SyncCode)
+                    .on_submit(Message::SyncJoin)
+                    .font(p.font())
+                    .size(p.font_size.body)
+                    .style(styles::text_input(p))
+                    .padding([10.0, 12.0]),
+                self.control(self.label("Link")).on_press_maybe(
+                    (!self.sync_code.trim().is_empty()).then_some(Message::SyncJoin)
+                ),
+            ]
+            .spacing(p.shape.spacing)
+            .align_y(Alignment::Center),
+        );
+        if sync.peers.is_empty() {
+            panel = panel.push(self.subdued("No devices linked yet."));
+        }
+        let now: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        for peer in &sync.peers {
+            let status: String = match (&peer.error, peer.last_synced) {
+                (Some(error), _) => format!("Not reachable: {error}"),
+                (None, Some(at)) => format!("Synced {}", ago(now - at)),
+                (None, None) => "Not synced yet".into(),
+            };
+            panel = panel.push(
+                row![
+                    column![self.strong(peer.address.as_str()), self.subdued(status)]
+                        .spacing(2)
+                        .width(Length::Fill),
+                    self.control(self.label("Unlink"))
+                        .on_press(sync_action(SyncAction::Forget(peer.device_id.clone()))),
+                ]
+                .spacing(p.shape.spacing)
+                .align_y(Alignment::Center),
+            );
+        }
+        panel = panel.push(
+            row![
+                self.control(self.label("Sync now"))
+                    .on_press(sync_action(SyncAction::Now)),
+                self.control(self.label("Turn off sync"))
+                    .on_press(sync_action(SyncAction::Enable(false))),
+            ]
+            .spacing(p.shape.spacing),
+        );
+        container(panel)
+            .padding(p.shape.padding)
+            .style(styles::tile(p))
+            .into()
     }
 
     /// Headline numbers, each on its own tile.
@@ -364,6 +479,16 @@ fn average_minutes(stats: &ListeningStats) -> String {
     match stats.plays {
         0 => "0".into(),
         plays => format!("{:.1}", stats.listened_ms as f64 / plays as f64 / 60_000.0),
+    }
+}
+
+/// How long ago, roughly, `seconds` were.
+fn ago(seconds: i64) -> String {
+    match seconds {
+        ..60 => "just now".into(),
+        60..3_600 => format!("{} min ago", seconds / 60),
+        3_600..86_400 => format!("{} h ago", seconds / 3_600),
+        _ => format!("{} days ago", seconds / 86_400),
     }
 }
 

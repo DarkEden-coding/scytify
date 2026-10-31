@@ -120,6 +120,11 @@ enum Message {
     UpdateFailed(String),
     /// Show listening stats over another range, in place.
     StatsRange(StatsRange),
+    /// Show or hide linked devices on the stats page.
+    SyncPanel,
+    SyncCode(String),
+    /// Link with the device whose code was typed.
+    SyncJoin,
     Queue,
     QueueScroll(f32, f32, bool),
     QueueMore,
@@ -311,6 +316,10 @@ struct Ui {
     lyrics: lyrics::Panel,
     /// Unsaved key typed in Settings; cleared once sent.
     lyrics_key: String,
+    /// The stats page shows its linked devices panel.
+    sync_open: bool,
+    /// Link code being typed on the stats page.
+    sync_code: String,
 }
 /// Run the native daemon on the main thread. Receivers are consumed once by a persistent task.
 pub fn run(port: FrontendPort) -> iced::Result {
@@ -456,6 +465,8 @@ impl Ui {
             split_drag: None,
             lyrics: Default::default(),
             lyrics_key: String::new(),
+            sync_open: false,
+            sync_code: String::new(),
         };
         match persistence::Preferences::load() {
             Ok(p) => {
@@ -1126,6 +1137,7 @@ impl Ui {
                 let revision_changed: bool =
                     self.state.player.queue_revision != state.player.queue_revision;
                 let was_remote: bool = self.state.connect.is_remote();
+                let synced: bool = self.state.sync.revision != state.sync.revision;
                 if state.player.volume > 0.0 {
                     self.unmuted_volume = state.player.volume;
                 }
@@ -1153,6 +1165,10 @@ impl Ui {
                     && self.window.is_some()
                 {
                     self.fetch_sidebar();
+                    self.fetch();
+                }
+                // Listening from another device arrived.
+                if synced && self.window.is_some() && self.stats_open() {
                     self.fetch();
                 }
                 // The queue panel lists the local queue; back from a remote device it is stale.
@@ -1454,6 +1470,14 @@ impl Ui {
                 self.show_notice(error);
             }
             Message::StatsRange(range) => self.go(Route::stats(range)),
+            Message::SyncPanel => self.sync_open = !self.sync_open,
+            Message::SyncCode(code) => self.sync_code = code,
+            Message::SyncJoin => {
+                let code: String = std::mem::take(&mut self.sync_code);
+                if !code.trim().is_empty() {
+                    self.send(Action::Sync(SyncAction::Join(code)));
+                }
+            }
             Message::Scroll(y, height) => {
                 self.scroll = y;
                 self.main_size.height = height;
@@ -2415,6 +2439,7 @@ mod channel_tests {
             cache_limit_bytes: 123_000_000,
             lyrics_key_set: false,
             discover_active: false,
+            sync: Default::default(),
         };
         let (front, back): (FrontendPort, BackendPort) = channels(initial);
         let (ui, _task): (Ui, Task<Message>) = Ui::boot(front);

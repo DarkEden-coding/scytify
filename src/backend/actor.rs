@@ -1,4 +1,6 @@
-use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, stats, storage};
+use super::{
+    api, auth, discover, lyrics, playback, playback_auth, queue::Queue, stats, storage, sync,
+};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -137,6 +139,8 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     let mut polling = super::remote::Polling::new();
     let mut discovery = discover::State::default();
     let mut listening = stats::Recorder::default();
+    let (sync_actions, mut sync_state) =
+        sync::start(store.reopen().map_err(|e| safe(ErrorKind::Internal, &e))?);
 
     let mut logged_auth = (String::new(), PlaybackAuth::default());
     loop {
@@ -214,7 +218,10 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     discovery.stop();
                     state.discover_active = false;
                 }
-                let result = if matches!(command.action, Action::PlayDiscover) {
+                let result = if let Action::Sync(action) = command.action {
+                    Some(sync_actions.try_send(action).map(|()| Response::Accepted)
+                        .map_err(|_| safe(ErrorKind::Unavailable, "sync is busy; try again")))
+                } else if matches!(command.action, Action::PlayDiscover) {
                     start_discover(id, auth_epoch, &discovery, &api, &store, &state, &tokens, &player, &mut jobs, &mut handles)
                 } else {
                     super::commands::handle_command(command.action, id, auth_epoch, &api, &mut lyrics, &store, &mut q, &mut state,
@@ -238,6 +245,10 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                         &mut player_events, &mut metadata, &mut jobs, &mut handles, &mut cancelled, &mut polling, &mut discovery);
                     let _ = port.state.send(state.clone());
                 }
+            }
+            Ok(()) = sync_state.changed() => {
+                state.sync = sync_state.borrow_and_update().clone();
+                let _ = port.state.send(state.clone());
             }
             _ = observation_tick.tick() => {
                 let now = std::time::Instant::now();

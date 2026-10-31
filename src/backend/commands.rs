@@ -347,6 +347,8 @@ pub(super) fn handle_command(
                     .map_err(|e| safe(ErrorKind::CredentialStore, &e)),
             )
         }
+        // The actor hands these to the sync task.
+        Action::Sync(_) => None,
         Action::ClearCache => Some(
             store
                 .clear_cache()

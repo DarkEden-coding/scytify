@@ -272,7 +272,21 @@ pub enum Action {
     },
     /// Store (Some) or forget (None) the Spicy Lyrics API key in the Secret Service.
     SetLyricsKey(Option<String>),
+    /// Listening stats sync with other devices; progress shows in `AppState::sync`.
+    Sync(SyncAction),
     Quit,
+}
+
+#[derive(Clone, Debug)]
+pub enum SyncAction {
+    /// Turn sync on or off. Stats already received from other devices stay.
+    Enable(bool),
+    /// Link with the device that shows this code, joining its group of devices.
+    Join(String),
+    /// Stop exchanging stats with a device.
+    Forget(String),
+    /// Exchange stats with every linked device now.
+    Now,
 }
 
 #[derive(Clone, Debug)]
