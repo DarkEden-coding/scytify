@@ -411,13 +411,18 @@ impl Polling {
     ) {
         self.pending = false;
         let seconds = match result {
-            Ok(_) => {
+            Ok(observation) => {
                 self.failures = 0;
                 *source = RemoteSource::Polling;
-                match (self.visible, decoder_owned) {
-                    (false, _) => 8,
-                    (true, true) => 5,
-                    (true, false) => 1,
+                // Each poll costs Spotify Web API quota, and polling every second for
+                // hours gets the whole app rate limited. Poll quickly only while another
+                // device is playing, since that is the only progress worth following.
+                let playing = observation.status == PlaybackStatus::Playing;
+                match (self.visible, decoder_owned, playing) {
+                    (false, _, _) => 30,
+                    (true, true, _) => 10,
+                    (true, false, true) => 3,
+                    (true, false, false) => 10,
                 }
             }
             Err(error) => {
@@ -912,10 +917,13 @@ mod tests {
         polling.visible = false;
         polling.finish(&Ok(parse_player(&Value::Null)), &mut source, false);
         assert_eq!(source, RemoteSource::Polling);
-        assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(7));
+        assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(29));
         polling.visible = true;
         polling.finish(&Ok(parse_player(&Value::Null)), &mut source, true);
-        assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(4));
+        assert!(polling.next.duration_since(Instant::now()) > Duration::from_secs(9));
+        let remote_playing = parse_player(&json!({"is_playing": true, "progress_ms": 0}));
+        polling.finish(&Ok(remote_playing), &mut source, false);
+        assert!(polling.next.duration_since(Instant::now()) <= Duration::from_secs(3));
         let mut state = crate::backend::initial_state();
         apply(
             &mut state,

@@ -104,7 +104,10 @@ impl Recorder {
         // Metadata of a song started elsewhere can arrive after it starts.
         listen.track.clone_from(track);
         listen.position_ms = position_ms;
-        if player.status == PlaybackStatus::Playing {
+        // A player still reporting "playing" at the very end of a song has stalled, not
+        // kept playing; counting it would add hours to one song.
+        let at_end = track.duration_ms > 0 && position_ms >= track.duration_ms;
+        if player.status == PlaybackStatus::Playing && !at_end {
             listen.listened_ms += step.min(MAX_STEP).as_millis() as u64;
         }
         if now.saturating_duration_since(listen.saved_at) >= SAVE_EVERY {
@@ -274,6 +277,31 @@ mod tests {
         assert_eq!(stats.top_tracks[0].plays, 3);
         assert_eq!(stats.top_artists[0].listened_ms, 110_000);
         assert_eq!((stats.streak_days, stats.longest_streak_days), (1, 1));
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A player stuck on "playing" at the end of a song stops adding listening time.
+    #[test]
+    fn a_stalled_player_at_the_end_of_a_song_is_not_counted() {
+        let root = std::env::temp_dir().join(format!("scytify-stats-{}", rand::random::<u64>()));
+        let store = Storage::open_at(&root).unwrap();
+        let a = track('a', "x", 200_000);
+        let mut recorder = Recorder::default();
+        let mut at = Instant::now();
+        for second in 0..=40 {
+            at += Duration::from_secs(1);
+            recorder.observe(&playing(&a), 160_000 + second * 1000, at, &store);
+        }
+        for _ in 0..3600 {
+            at += Duration::from_secs(1);
+            recorder.observe(&playing(&a), 200_000, at, &store);
+        }
+        recorder.finish(&store, at);
+
+        let stats = summary(&store, StatsRange::Week, storage::now()).unwrap();
+        // 39 s: the first observation has nothing to measure from.
+        assert_eq!(stats.listened_ms, 39_000);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

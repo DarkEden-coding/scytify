@@ -26,6 +26,8 @@ pub(crate) struct Api {
     catalog_base_url: String,
     pub(super) control_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub(super) playback_backoff: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// When a rate-limited identity check may be retried; sign-in waits until then.
+    identity_backoff: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// Complete, immutable source membership gathered before a queue transaction is committed.
@@ -49,10 +51,21 @@ impl Api {
             catalog_base_url: "https://api.spotify.com/v1".into(),
             control_lock: Default::default(),
             playback_backoff: Default::default(),
+            identity_backoff: Default::default(),
         })
     }
+    /// Seconds until a rate-limited identity check may be retried, if one is pending.
+    pub(crate) fn identity_wait(&self) -> Option<u64> {
+        let until = (*self.identity_backoff.lock().unwrap())?;
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        (!left.is_zero()).then(|| left.as_secs().saturating_add(1))
+    }
+
     /// Resolves the current user's stable Spotify ID for ownership filtering.
     pub(crate) async fn identity(&self, token: &str) -> Result<String, AppError> {
+        if let Some(wait) = self.identity_wait() {
+            return Err(identity_rate_limited(wait));
+        }
         let r = self
             .http
             .get("https://api.spotify.com/v1/me")
@@ -60,10 +73,16 @@ impl Api {
             .send()
             .await
             .map_err(|_| err(ErrorKind::Network, "Spotify is unreachable"))?;
-        if !r.status().is_success() {
+        if let Err(e) = check_status(&r) {
+            if e.kind == ErrorKind::RateLimited {
+                let wait = e.retry_after_seconds.unwrap_or(30).max(1);
+                *self.identity_backoff.lock().unwrap() = std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_secs(wait));
+                return Err(identity_rate_limited(wait));
+            }
             return Err(err(
-                ErrorKind::Authentication,
-                "could not verify Spotify identity",
+                e.kind,
+                &format!("could not verify Spotify identity: {}", e.message),
             ));
         }
         let v: serde_json::Value = r
@@ -733,6 +752,20 @@ pub(super) fn check_status(r: &reqwest::Response) -> Result<(), AppError> {
         )),
         _ if !r.status().is_success() => Err(err(ErrorKind::Network, "Spotify API request failed")),
         _ => Ok(()),
+    }
+}
+
+/// Rate-limit error for sign-in that says how long Spotify asked the app to wait.
+fn identity_rate_limited(wait: u64) -> AppError {
+    let when = match wait {
+        0..=90 => format!("{wait} seconds"),
+        91..=5400 => format!("{} minutes", wait.div_ceil(60)),
+        _ => format!("{} hours", wait.div_ceil(3600)),
+    };
+    AppError {
+        kind: ErrorKind::RateLimited,
+        message: format!("Spotify rate limit reached; sign-in is paused for about {when}"),
+        retry_after_seconds: Some(wait),
     }
 }
 

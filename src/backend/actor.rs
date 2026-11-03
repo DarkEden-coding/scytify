@@ -294,7 +294,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     && let Some(token) = tokens.as_ref() {
                     polling.pending = true;
                     let details = std::time::Instant::now() >= polling.details_at;
-                    if details { polling.details_at = std::time::Instant::now() + std::time::Duration::from_secs(10); }
+                    if details { polling.details_at = std::time::Instant::now() + std::time::Duration::from_secs(30); }
                     let a = api.clone(); let token = token.access_token.clone(); let epoch = auth_epoch; let revision = polling.revision;
                     jobs.spawn(async move { Job::RemotePoll(epoch, revision, a.observe(&token, details).await) });
                 }
@@ -303,7 +303,7 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                 if let Err(error) = store.prune_lyrics(storage::now()) {
                     emit(&port.events, Event::Notice(safe(ErrorKind::Internal, &error)));
                 }
-                if background_auth.is_none() && jobs.len() < 4
+                if background_auth.is_none() && jobs.len() < 4 && api.identity_wait().is_none()
                     && let (Some(t), Some(cid)) = (tokens.clone().filter(auth::expiring), state.settings.client_id.clone()) {
                         let a=api.clone(); let epoch=auth_epoch;
                         background_auth = Some(jobs.spawn(async move{Job::Refresh(epoch, refresh_ready(a,cid,t).await)}));
@@ -1498,6 +1498,13 @@ fn handle_player_event(
     }
     // Spirc owns queue advancement; only the fallback queue handles terminal events.
     if spirc {
+        // When Spirc has nothing to play next it sends no further event, so the song
+        // would stay "playing" at its end forever. A following track's Loading/Playing
+        // replaces this.
+        if matches!(update, playback::Update::End) {
+            playback::advance_anchor(&mut state.player, observed_at);
+            state.player.status = PlaybackStatus::Paused;
+        }
         return false;
     }
     let mut queue_dirty = false;
