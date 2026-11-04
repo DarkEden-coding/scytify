@@ -1,4 +1,6 @@
-use super::actor::{Job, artwork, emit, load_current, login_ready, safe, sync_queue};
+use super::actor::{
+    Job, artwork, emit, load_current, login_ready, safe, start_current, sync_queue,
+};
 use super::{api, auth, discover, lyrics, playback, playback_auth, queue::Queue, stats, storage};
 use crate::{contracts::*, domain::*};
 use std::collections::{HashMap, HashSet};
@@ -568,16 +570,12 @@ pub(super) fn handle_command(
             None
         }
         Action::Resume => {
-            if player.is_some() {
-                // A restored session may have a connected player but no decoder loaded.
-                load_current(q, state, player, true);
-                ok!()
-            } else {
-                Some(Err(safe(
-                    ErrorKind::Unavailable,
-                    "audio session is not connected; select a track",
-                )))
+            if q.snapshot.current.is_none() {
+                return Some(Err(safe(ErrorKind::Unavailable, "select a track to play")));
             }
+            // After a restart or a dropped Connect session there is no player yet;
+            // start_current reconnects first, then loads the current track.
+            start_current(id, auth_epoch, q, state, tokens, player, jobs, handles)
         }
         Action::Pause => {
             if let Some(p) = player {
@@ -595,8 +593,12 @@ pub(super) fn handle_command(
                 .as_ref()
                 .and_then(|e| metadata.get(&e.track_id))
                 .cloned();
-            load_current(q, state, player, true);
-            ok!()
+            if q.snapshot.current.is_none() {
+                // The queue ran out; load_current clears the player without reconnecting.
+                load_current(q, state, player, true);
+                return ok!();
+            }
+            start_current(id, auth_epoch, q, state, tokens, player, jobs, handles)
         }
         Action::Previous => {
             q.previous();
@@ -607,8 +609,7 @@ pub(super) fn handle_command(
                 .as_ref()
                 .and_then(|e| metadata.get(&e.track_id))
                 .cloned();
-            load_current(q, state, player, true);
-            ok!()
+            start_current(id, auth_epoch, q, state, tokens, player, jobs, handles)
         }
         Action::Seek { position_ms } => {
             let Some(p) = player.as_mut().filter(|_| q.snapshot.current.is_some()) else {
@@ -1014,5 +1015,65 @@ mod tests {
         assert_eq!(state.player.position_ms, 90_000);
         show_spirc_command(&Action::SetShuffle(true), &mut queue, &mut state);
         assert!(state.player.shuffle);
+    }
+
+    /// After a restart or a dropped Connect session, play must reconnect rather than fail.
+    #[tokio::test]
+    async fn resume_without_a_player_reconnects_for_the_restored_track() {
+        let root = std::env::temp_dir().join(format!("scytify-resume-{}", rand::random::<u64>()));
+        let store = storage::Storage::open_at(&root).unwrap();
+        let api = api::Api::new().unwrap();
+        let mut lyrics = lyrics::Client::new(None).unwrap();
+        let mut queue = Queue::empty(1);
+        queue
+            .activate_track(SpotifyId("0123456789012345678901".into()))
+            .unwrap();
+        let mut state = crate::backend::initial_state();
+        state.settings.client_id = Some("fictitious-client".into());
+        state.auth = AuthState::Ready {
+            user_id: "listener".into(),
+        };
+        state.connect.playback_auth = PlaybackAuth::Ready;
+        let mut tokens = Some(auth::Tokens {
+            access_token: "fictitious-unused-token".into(),
+            refresh_token: None,
+            expires_at: u64::MAX,
+        });
+        let mut player = None;
+        let mut player_events = None;
+        let metadata = HashMap::new();
+        let mut jobs = JoinSet::new();
+        let mut art_jobs = JoinSet::new();
+        let mut handles = HashMap::new();
+        let mut cancelled = HashSet::new();
+        let mut login_ids = HashSet::new();
+        let (events, _receiver) = tokio::sync::mpsc::channel(8);
+        let result = handle_command(
+            Action::Resume,
+            RequestId(1),
+            0,
+            &api,
+            &mut lyrics,
+            &store,
+            &mut queue,
+            &mut state,
+            &mut tokens,
+            &mut player,
+            &mut player_events,
+            &metadata,
+            &mut jobs,
+            &mut art_jobs,
+            &mut handles,
+            &mut cancelled,
+            &mut login_ids,
+            &events,
+        );
+        // The request completes once the session connects; nothing is polled here.
+        assert!(result.is_none());
+        assert!(handles.contains_key(&RequestId(1)));
+        assert_eq!(state.player.status, PlaybackStatus::Loading);
+        jobs.abort_all();
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
