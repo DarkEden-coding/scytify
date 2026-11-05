@@ -507,7 +507,7 @@ mod tests {
         let (a, b) = (shared(&root_a), shared(&root_b));
         let track: Track = serde_json::from_value(serde_json::json!({
             "id": "a".repeat(22), "name": "Song", "artists": [], "album": null,
-            "duration_ms": 1000, "playable": true, "source_index": null
+            "duration_ms": 200000, "playable": true, "source_index": null
         }))
         .unwrap();
         a.store().save_listen(None, &track, 1, 5_000, true).unwrap();

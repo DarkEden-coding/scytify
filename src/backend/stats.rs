@@ -110,6 +110,10 @@ impl Recorder {
         if player.status == PlaybackStatus::Playing && !at_end {
             listen.listened_ms += step.min(MAX_STEP).as_millis() as u64;
         }
+        // Playing a song again from the start is a new listen, so one cannot outlast it.
+        if track.duration_ms > 0 {
+            listen.listened_ms = listen.listened_ms.min(track.duration_ms);
+        }
         if now.saturating_duration_since(listen.saved_at) >= SAVE_EVERY {
             listen.save(store, now);
         }
@@ -277,6 +281,34 @@ mod tests {
         assert_eq!(stats.top_tracks[0].plays, 3);
         assert_eq!(stats.top_artists[0].listened_ms, 110_000);
         assert_eq!((stats.streak_days, stats.longest_streak_days), (1, 1));
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// One listen never counts for longer than its song, including listens stored before
+    /// the recorder capped them.
+    #[test]
+    fn a_listen_is_capped_at_the_length_of_its_song() {
+        let root = std::env::temp_dir().join(format!("scytify-stats-{}", rand::random::<u64>()));
+        let store = Storage::open_at(&root).unwrap();
+        let a = track('a', "x", 20_000);
+        let b = track('b', "y", 200_000);
+        let mut recorder = Recorder::default();
+        let mut at = Instant::now();
+        // A position that never reaches the end, as from a stalled remote device.
+        for _ in 0..60 {
+            at += Duration::from_secs(1);
+            recorder.observe(&playing(&a), 10_000, at, &store);
+        }
+        recorder.finish(&store, at);
+        store
+            .save_listen(None, &b, storage::now(), 23_000_000, true)
+            .unwrap();
+
+        let stats = summary(&store, StatsRange::Week, storage::now()).unwrap();
+        assert_eq!(stats.listened_ms, 220_000);
+        assert_eq!(stats.by_hour.iter().sum::<u64>(), 220_000);
+        assert_eq!(stats.top_artists[0].listened_ms, 200_000);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -126,6 +126,12 @@ pub(super) fn handle_command(
     {
         return Some(super::remote::queue_page(state, *revision, *page));
     }
+    // Playing a finished song starts it over; Spirc stopped once it ended, so it is loaded
+    // again below rather than resumed.
+    let replay = matches!(action, Action::Resume) && playback::is_finished(&state.player);
+    if replay {
+        q.snapshot.position_ms = 0;
+    }
     if let Some(connect) = player.as_ref().and_then(|p| p.connect.as_ref())
         && matches!(
             action,
@@ -140,7 +146,7 @@ pub(super) fn handle_command(
         )
     {
         if matches!(action, Action::Resume)
-            && state.connect.active_device_id.is_none()
+            && (replay || state.connect.active_device_id.is_none())
             && q.snapshot.current.is_some()
         {
             load_current(q, state, player, true);

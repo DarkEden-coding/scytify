@@ -304,6 +304,52 @@ pub(super) fn position_at(player: &crate::domain::PlayerState, at: Instant) -> u
     )
 }
 
+/// How long a song may report "playing" past its end before it counts as finished. A
+/// following song loads well within this; when none does, nothing else says so.
+const END_GRACE: Duration = Duration::from_secs(2);
+/// How close to its end a song that stops must be to count as finished.
+const END_TOLERANCE_MS: u64 = 1_000;
+
+/// Leaves the current song paused at its end, the way a finished song is shown.
+pub(super) fn show_finished(player: &mut crate::domain::PlayerState) {
+    if let Some(track) = player.current.as_ref().filter(|t| t.duration_ms > 0) {
+        player.position_ms = track.duration_ms;
+    }
+    player.status = crate::domain::PlaybackStatus::Paused;
+}
+
+/// Whether the current song is paused at its end, so playing should start it over.
+pub(super) fn is_finished(player: &crate::domain::PlayerState) -> bool {
+    player.status == crate::domain::PlaybackStatus::Paused
+        && player
+            .current
+            .as_ref()
+            .is_some_and(|t| t.duration_ms > 0 && player.position_ms >= t.duration_ms)
+}
+
+/// Pauses a song still reported as playing well past its end, as when its end-of-track
+/// event never arrives or a remote device keeps saying "playing".
+/// Returns whether the player changed.
+pub(super) fn settle_finished(player: &mut crate::domain::PlayerState, at: Instant) -> bool {
+    use crate::domain::PlaybackStatus;
+    let Some(duration) = player.current.as_ref().map(|t| t.duration_ms) else {
+        return false;
+    };
+    if player.status != PlaybackStatus::Playing || duration == 0 {
+        return false;
+    }
+    let end =
+        player.observed_at + Duration::from_millis(duration.saturating_sub(player.position_ms));
+    if at.saturating_duration_since(end) < END_GRACE {
+        return false;
+    }
+    // Anchored at the end rather than now, so an event for the next song received after
+    // the end still applies.
+    player.observed_at = end;
+    show_finished(player);
+    true
+}
+
 /// Advances both halves of an anchor before a synchronous local transport change.
 pub(super) fn advance_anchor(player: &mut crate::domain::PlayerState, at: Instant) {
     player.position_ms = position_at(player, at);
@@ -349,7 +395,16 @@ pub(super) fn apply_anchor(
         }
         Update::Stopped => {
             advance_anchor(player, observed_at);
-            player.status = PlaybackStatus::Stopped;
+            // Spirc stops the player when the last song ends; that song stays on screen,
+            // paused at its end.
+            let at_end = player.current.as_ref().is_some_and(|t| {
+                t.duration_ms > 0 && player.position_ms + END_TOLERANCE_MS >= t.duration_ms
+            });
+            if at_end {
+                show_finished(player);
+            } else {
+                player.status = PlaybackStatus::Stopped;
+            }
             return true;
         }
         Update::Track(_)
@@ -644,6 +699,54 @@ mod event_tests {
         assert_eq!(position_at(&player, processed_at), 0);
         assert!(!apply_anchor(&mut player, &Update::End, processed_at));
         assert_eq!(player.observed_at, received_at);
+    }
+
+    /// A song that plays to its end is left paused there, whether the player stops or
+    /// keeps reporting "playing", and a stop partway through stays a stop.
+    #[test]
+    fn a_finished_song_is_shown_paused_at_its_end() {
+        use crate::domain::PlaybackStatus;
+        let start = Instant::now();
+        let mut player = crate::backend::initial_state().player;
+        player.current = Some(crate::domain::Track {
+            id: crate::domain::SpotifyId("a".repeat(22)),
+            name: "Song".into(),
+            artists: Vec::new(),
+            album: None,
+            duration_ms: 10_000,
+            playable: true,
+            source_index: None,
+        });
+        let playing = {
+            let mut player = player.clone();
+            apply_anchor(&mut player, &Update::Playing(0), start);
+            player
+        };
+
+        let mut stuck = playing.clone();
+        assert!(!settle_finished(
+            &mut stuck,
+            start + Duration::from_secs(11)
+        ));
+        assert!(settle_finished(&mut stuck, start + Duration::from_secs(13)));
+        assert_eq!(stuck.status, PlaybackStatus::Paused);
+        assert_eq!(stuck.position_ms, 10_000);
+        assert_eq!(stuck.observed_at, start + Duration::from_secs(10));
+        assert!(is_finished(&stuck));
+
+        let mut stopped = playing.clone();
+        apply_anchor(
+            &mut stopped,
+            &Update::Stopped,
+            start + Duration::from_millis(9_600),
+        );
+        assert_eq!(stopped.status, PlaybackStatus::Paused);
+        assert!(is_finished(&stopped));
+
+        let mut early = playing;
+        apply_anchor(&mut early, &Update::Stopped, start + Duration::from_secs(4));
+        assert_eq!(early.status, PlaybackStatus::Stopped);
+        assert!(!is_finished(&early));
     }
 
     #[test]

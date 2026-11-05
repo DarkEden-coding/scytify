@@ -139,6 +139,14 @@ impl Queue {
     }
 
     /// Advances manually or after one generation-checked natural completion.
+    /// Whether a song that finishes now has one to follow it.
+    pub(crate) fn has_next(&self) -> bool {
+        self.snapshot.repeat == RepeatMode::One
+            || (self.snapshot.repeat == RepeatMode::Queue && !self.source_order.is_empty())
+            || !self.snapshot.explicit_queue.is_empty()
+            || !self.snapshot.remaining.is_empty()
+    }
+
     pub(crate) fn next(&mut self, natural: bool) -> Option<QueueEntry> {
         if natural && self.snapshot.repeat == RepeatMode::One {
             self.snapshot.position_ms = 0;

@@ -252,6 +252,12 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
             }
             _ = observation_tick.tick() => {
                 let now = std::time::Instant::now();
+                if playback::settle_finished(&mut state.player, now) {
+                    if !state.connect.is_remote() {
+                        q.snapshot.position_ms = state.player.position_ms;
+                    }
+                    let _ = port.state.send(state.clone());
+                }
                 listening.observe(&state.player, playback::position_at(&state.player, now), now, &store);
                 if follow_discovery(auth_epoch, &mut discovery, &api, &store, &q, &mut state, &tokens, &player, &mut jobs) {
                     let _ = port.state.send(state.clone());
@@ -1503,12 +1509,19 @@ fn handle_player_event(
         // replaces this.
         if matches!(update, playback::Update::End) {
             playback::advance_anchor(&mut state.player, observed_at);
-            state.player.status = PlaybackStatus::Paused;
+            playback::show_finished(&mut state.player);
         }
         return false;
     }
     let mut queue_dirty = false;
     match update {
+        // The last song stays on screen, paused at its end; Resume plays it again.
+        playback::Update::End if !q.has_next() => {
+            playback::advance_anchor(&mut state.player, observed_at);
+            playback::show_finished(&mut state.player);
+            q.snapshot.position_ms = state.player.position_ms;
+            queue_dirty = true;
+        }
         playback::Update::End => {
             queue_dirty = true;
             q.next(true);

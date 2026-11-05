@@ -293,7 +293,7 @@ impl Storage {
     pub(crate) fn listen_totals(&self, since: i64) -> Result<Vec<(Track, u64, u64)>, String> {
         let mut statement = self
             .db
-            .prepare("SELECT t.body, SUM(l.listened_ms), SUM(l.counted) FROM listens l JOIN listened_tracks t ON t.track_id=l.track_id WHERE l.started_at>=?1 GROUP BY l.track_id")
+            .prepare(&format!("SELECT t.body, SUM({LISTENED_MS}), SUM(l.counted) FROM listens l JOIN listened_tracks t ON t.track_id=l.track_id WHERE l.started_at>=?1 GROUP BY l.track_id"))
             .map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([since], |r| {
@@ -318,7 +318,7 @@ impl Storage {
     pub(crate) fn listen_hours(&self, since: i64) -> Result<[u64; 24], String> {
         let mut statement = self
             .db
-            .prepare("SELECT CAST(strftime('%H',started_at,'unixepoch','localtime') AS INTEGER), SUM(listened_ms) FROM listens WHERE started_at>=?1 GROUP BY 1")
+            .prepare(&format!("SELECT CAST(strftime('%H',l.started_at,'unixepoch','localtime') AS INTEGER), SUM({LISTENED_MS}) FROM listens l LEFT JOIN listened_tracks t ON t.track_id=l.track_id WHERE l.started_at>=?1 GROUP BY 1"))
             .map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
@@ -663,6 +663,11 @@ fn next_seq(db: &Connection) -> rusqlite::Result<i64> {
         |r| r.get(0),
     )
 }
+
+/// A listen's time (`l`) capped at its song's length (`t`): one listen cannot outlast its
+/// song. Listens stored before the recorder enforced this, or synced from a device that
+/// does not, can hold hours from a player that stalled at the end of a song.
+const LISTENED_MS: &str = "MIN(l.listened_ms, COALESCE(NULLIF(CASE WHEN json_valid(t.body) THEN json_extract(t.body,'$.duration_ms') END, 0), l.listened_ms))";
 
 /// Adds what merging with other devices needs: the device each listen and history row
 /// comes from, its row there, and a change number that orders every write. Rows from
