@@ -40,6 +40,10 @@ const CENTER: f32 = 256.0;
 const BAR_RADIUS: f32 = 16.0;
 const GLOW_SIGMA: f32 = 10.0;
 const GLOW_OPACITY: f32 = 0.4;
+/// Beyond this distance from a bar its glow is under a hundredth of a colour step.
+const GLOW_REACH: f32 = 4.0 * GLOW_SIGMA;
+/// Half the longest any bar gets, in any state, plus its rounded cap.
+const BAR_HALF_REACH: f32 = 212.0 / 2.0 + BAR_RADIUS;
 
 /// Length of each bar, or `None` when the bar is not drawn. `seconds` only matters when playing.
 fn bar_lengths(state: IconState, seconds: f32) -> [Option<f32>; 5] {
@@ -140,6 +144,19 @@ fn blurred_span(from: f32, to: f32, at: f32) -> f32 {
     0.5 * (erf((to - at) / scale) - erf((from - at) / scale))
 }
 
+/// Straight-alpha output bytes of a premultiplied pixel.
+fn to_rgba(px: Premultiplied) -> [u8; 4] {
+    let a = px[3];
+    let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let straight = |channel: f32| if a > 0.0 { channel / a } else { 0.0 };
+    [
+        byte(straight(px[0])),
+        byte(straight(px[1])),
+        byte(straight(px[2])),
+        byte(a),
+    ]
+}
+
 /// Renders icon frames at one size. The tile, rim and well never change, so they are drawn once.
 pub struct DockIconRenderer {
     size: u32,
@@ -148,6 +165,11 @@ pub struct DockIconRenderer {
     /// Fraction of the canvas the 512-unit design spans; the rest is transparent margin.
     art_scale: f32,
     background: Vec<Premultiplied>,
+    /// `background` already converted to output bytes, for pixels bars and glow never reach.
+    background_rgba: Vec<u8>,
+    /// Output columns and rows that bars or their glow can touch.
+    bar_columns: std::ops::Range<usize>,
+    bar_rows: std::ops::Range<usize>,
 }
 
 impl DockIconRenderer {
@@ -160,6 +182,9 @@ impl DockIconRenderer {
             pixel,
             art_scale,
             background: Vec::new(),
+            background_rgba: Vec::new(),
+            bar_columns: 0..0,
+            bar_rows: 0..0,
         };
         let mut background = Vec::with_capacity((size * size) as usize);
         for row in 0..size {
@@ -168,13 +193,28 @@ impl DockIconRenderer {
                 background.push(Self::background_pixel(x, y, pixel));
             }
         }
+        renderer.background_rgba = background.iter().flat_map(|&px| to_rgba(px)).collect();
         renderer.background = background;
+        let margin = BAR_RADIUS + GLOW_REACH + pixel;
+        renderer.bar_columns = renderer.pixels_within(BAR_X[0] - margin, BAR_X[4] + margin);
+        renderer.bar_rows = renderer.pixels_within(
+            CENTER - BAR_HALF_REACH - GLOW_REACH - pixel,
+            CENTER + BAR_HALF_REACH + GLOW_REACH + pixel,
+        );
         renderer
     }
 
     /// Design-space coordinate of the centre of output pixel `index` along either axis.
     fn design(&self, index: u32) -> f32 {
         ((index as f32 + 0.5) / self.size as f32 - 0.5) * 512.0 / self.art_scale + CENTER
+    }
+
+    /// Output pixels whose centres lie between two design-space coordinates on either axis.
+    fn pixels_within(&self, from: f32, to: f32) -> std::ops::Range<usize> {
+        let index = |at: f32| ((at - CENTER) * self.art_scale / 512.0 + 0.5) * self.size as f32;
+        let start = index(from).floor().max(0.0) as usize;
+        let end = (index(to).ceil().max(0.0) as usize).min(self.size as usize);
+        start..end.max(start)
     }
 
     fn background_pixel(x: f32, y: f32, pixel: f32) -> Premultiplied {
@@ -214,15 +254,15 @@ impl DockIconRenderer {
         let bar_stops = if glow { BAR_LIVE } else { BAR_CLOSED };
 
         // The blur is separable per bar, so each axis is evaluated once per column or row.
-        let centres = || (0..self.size).map(|k| self.design(k));
-        let columns: Vec<[f32; 5]> = centres()
+        let centres = |range: &std::ops::Range<usize>| range.clone().map(|k| self.design(k as u32));
+        let columns: Vec<[f32; 5]> = centres(&self.bar_columns)
             .map(|x| {
                 std::array::from_fn(|i| {
                     blurred_span(BAR_X[i] - BAR_RADIUS, BAR_X[i] + BAR_RADIUS, x)
                 })
             })
             .collect();
-        let rows: Vec<[f32; 5]> = centres()
+        let rows: Vec<[f32; 5]> = centres(&self.bar_rows)
             .map(|y| {
                 std::array::from_fn(|i| match lengths[i] {
                     Some(len) if glow => {
@@ -234,10 +274,10 @@ impl DockIconRenderer {
             })
             .collect();
 
-        let mut pixels = Vec::with_capacity(size * size * 4);
-        for (row, row_blur) in rows.iter().enumerate() {
+        let mut pixels = self.background_rgba.clone();
+        for (row, row_blur) in self.bar_rows.clone().zip(&rows) {
             let y = self.design(row as u32);
-            for (col, col_blur) in columns.iter().enumerate() {
+            for (col, col_blur) in self.bar_columns.clone().zip(&columns) {
                 let x = self.design(col as u32);
                 let mut px = self.background[row * size + col];
                 if glow && px[3] > 0.0 {
@@ -257,12 +297,8 @@ impl DockIconRenderer {
                     let c = gradient(bar_stops, (y - 150.0) / 212.0);
                     over(&mut px, [c[0], c[1], c[2]], bar);
                 }
-                let a = px[3];
-                for channel in &px[..3] {
-                    let straight = if a > 0.0 { channel / a } else { 0.0 };
-                    pixels.push((straight.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-                }
-                pixels.push((a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                let at = (row * size + col) * 4;
+                pixels[at..at + 4].copy_from_slice(&to_rgba(px));
             }
         }
         Rgba {
@@ -340,6 +376,25 @@ mod tests {
         assert_eq!(pixel(&icon, 4, 64)[3], 0);
         assert_eq!(pixel(&icon, 64, 14)[3], 255);
         assert_eq!(pixel(&icon, 14, 64)[3], 255);
+    }
+
+    #[test]
+    fn drawing_only_the_bar_region_matches_drawing_every_pixel() {
+        for (size, art_scale) in [(256, 824.0 / 1024.0), (128, 1.0)] {
+            let fast = DockIconRenderer::new(size, art_scale);
+            let mut full = DockIconRenderer::new(size, art_scale);
+            full.bar_columns = 0..size as usize;
+            full.bar_rows = 0..size as usize;
+            for (state, seconds) in [(IconState::Playing, 0.7), (IconState::Paused, 0.0)] {
+                let (a, b) = (fast.render(state, seconds), full.render(state, seconds));
+                assert!(
+                    a.pixels
+                        .iter()
+                        .zip(&b.pixels)
+                        .all(|(x, y)| x.abs_diff(*y) <= 1)
+                );
+            }
+        }
     }
 
     #[test]

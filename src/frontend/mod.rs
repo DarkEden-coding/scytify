@@ -61,6 +61,8 @@ enum Message {
     State(AppState),
     Backend(Event),
     Disconnected,
+    /// Whether any app window can be seen.
+    Visible(bool),
     Window(window::Id, window::Event),
     Opened(window::Id),
     Action(Action),
@@ -221,6 +223,7 @@ struct Ui {
     next: u64,
     window: Option<window::Id>,
     focused: bool,
+    visible: bool,
     palette: Palette,
     glyphs: icons::SolidGlyphs,
     notice: String,
@@ -403,6 +406,7 @@ impl Ui {
             next: 1,
             window: None,
             focused: true,
+            visible: true,
             glyphs: icons::SolidGlyphs::new(&palette),
             palette,
             notice,
@@ -485,10 +489,32 @@ impl Ui {
                 let mut events = port.events;
                 let mut state = port.state;
                 let mut state_open: bool = true;
+                // While no window can be seen, state updates are held back: each would rebuild
+                // and redraw the window, keeping GPU memory resident for nothing. The latest
+                // state is delivered once a window shows again.
+                let mut visibility = crate::desktop::visibility();
+                let mut held: bool = false;
                 loop {
                     tokio::select! {
                         event = events.recv() => match event { Some(e)=>if output.send(Message::Backend(e)).await.is_err(){break}, None=>break },
-                        changed = state.changed(), if state_open => { if changed.is_err(){state_open=false;continue} let snapshot: AppState = state.borrow_and_update().clone(); if output.send(Message::State(snapshot)).await.is_err(){break} }
+                        changed = state.changed(), if state_open => {
+                            if changed.is_err(){state_open=false;continue}
+                            if !*visibility.borrow() {
+                                state.mark_unchanged();
+                                held = true;
+                                continue;
+                            }
+                            let snapshot: AppState = state.borrow_and_update().clone();
+                            if output.send(Message::State(snapshot)).await.is_err(){break}
+                        }
+                        Ok(()) = visibility.changed() => {
+                            let visible: bool = *visibility.borrow_and_update();
+                            if output.send(Message::Visible(visible)).await.is_err(){break}
+                            if visible && std::mem::take(&mut held) {
+                                let snapshot: AppState = state.borrow().clone();
+                                if output.send(Message::State(snapshot)).await.is_err(){break}
+                            }
+                        }
                     }
                 }
                 let _ = output.send(Message::Disconnected).await;
@@ -1112,6 +1138,10 @@ impl Ui {
             }
             Message::Window(_, window::Event::Unfocused) => {
                 self.focused = false;
+            }
+            Message::Visible(visible) => {
+                self.visible = visible;
+                self.send(Action::SetVisible(visible));
             }
             Message::Window(_, _) | Message::Tick => {}
             Message::Disconnected => {
@@ -1913,6 +1943,7 @@ impl Ui {
         // The lyrics frame also drives the glide, so only one of them listens to frames.
         let events: Subscription<Message> = if self.lyrics_open
             && self.window.is_some()
+            && self.visible
             && self.focused
             && playing
             && self.lyrics.animated()
@@ -1927,6 +1958,7 @@ impl Ui {
             events
         };
         if self.window.is_some()
+            && self.visible
             && self.focused
             && self.state.player.status == PlaybackStatus::Playing
         {

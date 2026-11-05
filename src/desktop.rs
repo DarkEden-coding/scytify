@@ -6,7 +6,23 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod macos_dock;
 #[cfg(target_os = "macos")]
+mod macos_visibility;
+#[cfg(target_os = "macos")]
 pub use macos::run;
+
+/// Whether the app's windows can be seen. Platforms that do not report it are always visible.
+pub fn visibility() -> tokio::sync::watch::Receiver<bool> {
+    #[cfg(target_os = "macos")]
+    return macos_visibility::receiver();
+    #[cfg(not(target_os = "macos"))]
+    {
+        static ALWAYS: std::sync::OnceLock<tokio::sync::watch::Sender<bool>> =
+            std::sync::OnceLock::new();
+        ALWAYS
+            .get_or_init(|| tokio::sync::watch::channel(true).0)
+            .subscribe()
+    }
+}
 
 #[cfg(target_os = "linux")]
 mod linux {

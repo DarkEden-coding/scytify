@@ -47,8 +47,41 @@ fn init_logging() {
     log::info!("Scytify {} starting", env!("CARGO_PKG_VERSION"));
 }
 
+/// Keeps the Linux GPU stack small. wgpu's OpenGL backend loads every EGL vendor library (Mesa's
+/// brings LLVM), and the Vulkan loader starts lavapipe, a CPU rasterizer, and dzn, the WSL
+/// driver, beside the real GPU driver; together they cost about 90 MB. A machine without a Vulkan GPU falls back to Iced's
+/// software renderer. Variables the user sets are left alone.
+#[cfg(target_os = "linux")]
+fn limit_graphics_backends() {
+    const DRIVER_CHOICES: [&str; 4] = [
+        "VK_LOADER_DRIVERS_DISABLE",
+        "VK_LOADER_DRIVERS_SELECT",
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+    ];
+    let unset = |name: &str| std::env::var_os(name).is_none();
+    let mut defaults: Vec<(&str, &str)> = Vec::new();
+    if unset("WGPU_BACKEND") {
+        defaults.push(("WGPU_BACKEND", "vulkan"));
+    }
+    if DRIVER_CHOICES.iter().all(|name| unset(name)) {
+        let skipped_drivers = if unset("WSL_DISTRO_NAME") {
+            "*lvp*,*dzn*"
+        } else {
+            "*lvp*"
+        };
+        defaults.push(("VK_LOADER_DRIVERS_DISABLE", skipped_drivers));
+    }
+    for (name, value) in defaults {
+        // SAFETY: Called first in `main`, before any other thread exists to read the environment.
+        unsafe { std::env::set_var(name, value) };
+    }
+}
+
 /// Run the native window on the main thread and services on a small asynchronous runtime.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    limit_graphics_backends();
     init_logging();
     migrate::run();
     let runtime = tokio::runtime::Builder::new_multi_thread()

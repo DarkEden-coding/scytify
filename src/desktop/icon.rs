@@ -18,7 +18,8 @@ pub trait IconSink: Send + 'static {
     /// [`DockIconRenderer::new`].
     const ART_SCALE: f32 = 1.0;
 
-    fn show(&mut self, icon: Rgba);
+    /// `state_changed` marks the first frame of a new [`IconState`]; the rest animate it.
+    fn show(&mut self, icon: Rgba, state_changed: bool);
 }
 
 /// Show the icon matching playback until the state channel closes. Frames are produced only
@@ -32,8 +33,10 @@ pub async fn animate<S: IconSink>(mut state: watch::Receiver<AppState>, mut sink
     let mut frame_due = true;
     loop {
         let current = IconState::from_app(&state.borrow_and_update());
-        if shown != Some(current) || (current == IconState::Playing && frame_due) {
-            sink.show(renderer.render(current, started.elapsed().as_secs_f32()));
+        let state_changed = shown != Some(current);
+        if state_changed || (current == IconState::Playing && frame_due) {
+            let frame = renderer.render(current, started.elapsed().as_secs_f32());
+            sink.show(frame, state_changed);
             shown = Some(current);
         }
         frame_due = false;
@@ -56,7 +59,7 @@ mod tests {
 
     struct Recorder(Arc<Mutex<Vec<Vec<u8>>>>);
     impl IconSink for Recorder {
-        fn show(&mut self, icon: Rgba) {
+        fn show(&mut self, icon: Rgba, _: bool) {
             self.0.lock().unwrap().push(icon.pixels);
         }
     }
