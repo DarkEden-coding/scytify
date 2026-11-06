@@ -11,12 +11,21 @@ bundle_id=com.scytify.Scytify
 app="$HOME/Applications/$display_name.app"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 
+# Started by the app's own update: it quits itself once this script returns, so open the new
+# build after its process (SCYTIFY_UPDATE_PID) has gone.
+relaunch_after_exit() {
+    local pid=$1; shift
+    nohup sh -c 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"' "$pid" "$@" \
+        >/dev/null 2>&1 </dev/null &
+}
+
 # rustc strips through rust-objcopy, which some rustup macOS toolchains ship unable to load
 # libLLVM.dylib ("stripping debug info ... failed"); Apple's strip does the same job below.
 CARGO_PROFILE_RELEASE_STRIP=none cargo build --release --locked
 
 was_running=false
-if pgrep -x "$name" >/dev/null; then
+# An update started from the app leaves quitting and relaunching to the app.
+if [ -z "${SCYTIFY_UPDATE_PID:-}" ] && pgrep -x "$name" >/dev/null; then
     was_running=true
     echo "Quitting the running app..."
     osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
@@ -34,9 +43,8 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# The bundle icon is what the OS shows while the app is not running: the grey "closed" bars.
-# A running app replaces it at runtime (src/dock_icon.rs). iconutil wants each size at 1x and
-# 2x; the 1024 px slot (512@2x) is optional.
+# The bundle icon: the grey "closed" bars. iconutil wants each size at 1x and 2x; the 1024 px
+# slot (512@2x) is optional.
 iconset="$work/$name.iconset"
 mkdir "$iconset"
 for size in 16 32 128 256 512; do
@@ -95,6 +103,11 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 mdimport "$app" 2>/dev/null || true
 
 echo "Installed $app"
+if [ -n "${SCYTIFY_UPDATE_PID:-}" ]; then
+    relaunch_after_exit "$SCYTIFY_UPDATE_PID" open "$app"
+    echo "Relaunching after the app quits."
+    exit 0
+fi
 open "$app"
 if $was_running; then
     echo "Relaunched."

@@ -54,6 +54,14 @@ impl Ui {
             .push(space().width(p.shape.spacing))
             // Shrinks before anything else so the window buttons never clip on narrow windows.
             .push(container(search).width(Length::Fill).max_width(380.0))
+            .push(
+                iced::widget::checkbox(self.lyrics_filter.only)
+                    .label("Only songs with lyrics")
+                    .size(16)
+                    .text_size(p.font_size.small)
+                    .font(p.font())
+                    .on_toggle(Message::LyricsOnly),
+            )
             .push(space().width(Length::Fill));
         if self.update_available {
             let mut update = self.icon_button(Icon::Update, 20.0, true, Message::Update);

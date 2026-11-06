@@ -30,11 +30,17 @@ impl std::fmt::Display for Sort {
         })
     }
 }
-pub fn indices(items: &[Track], filter: &str, sort: Sort) -> Vec<usize> {
+pub fn indices(
+    items: &[Track],
+    filter: &str,
+    sort: Sort,
+    keep: impl Fn(&Track) -> bool,
+) -> Vec<usize> {
     let filter = filter.trim().to_lowercase();
     let mut indices: Vec<_> = items
         .iter()
         .enumerate()
+        .filter(|(_, t)| keep(t))
         .filter(|(_, t)| {
             filter.is_empty()
                 || t.name.to_lowercase().contains(&filter)
@@ -85,7 +91,7 @@ mod tests {
             source_index: Some(source),
         };
         let tracks = vec![track("Zebra", 4), track("Alpha", 8), track("Alpha", 12)];
-        let shown = indices(&tracks, "ALP", Sort::Title);
+        let shown = indices(&tracks, "ALP", Sort::Title, |_| true);
         assert_eq!(shown, vec![1, 2]);
         assert_eq!(
             shown

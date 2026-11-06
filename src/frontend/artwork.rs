@@ -216,8 +216,7 @@ impl Ui {
                             .map(cover),
                     ),
                     PageData::Tracks(p) if self.track_view_active() => {
-                        let indices =
-                            track_filter::indices(&p.items, &self.track_filter, self.track_sort);
+                        let indices = self.track_indices(&p.items);
                         let (start, end) = layout::visible_rows(
                             indices.len(),
                             self.scroll - self.content_top(data),
@@ -261,9 +260,9 @@ impl Ui {
                         }
                         // Song rows: the window is empty unless the top row is on screen.
                         urls.extend(
-                            r.tracks[start..end]
+                            self.search_tracks(r)[start..end]
                                 .iter()
-                                .filter_map(Track::artwork_url)
+                                .filter_map(|t| t.artwork_url())
                                 .map(cover),
                         );
                         if layout.artists.is_some_and(|top| self.on_screen(top, shelf)) {

@@ -1,10 +1,7 @@
-//! Native desktop media controls and the playback-aware application icon.
+//! Native desktop media controls.
 
-pub mod icon;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "macos")]
-mod macos_dock;
 #[cfg(target_os = "macos")]
 mod macos_visibility;
 #[cfg(target_os = "macos")]
@@ -403,15 +400,6 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::run;
-
-/// Keep the application icon in step with playback until the state channel closes. A platform
-/// joins by providing an [`icon::IconSink`] and adding its arm here.
-pub async fn run_icon(state: tokio::sync::watch::Receiver<crate::domain::AppState>) {
-    #[cfg(target_os = "macos")]
-    icon::animate(state, macos_dock::DockIcon).await;
-    #[cfg(not(target_os = "macos"))]
-    drop(state);
-}
 
 /// Other platforms currently have no desktop media adapter.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

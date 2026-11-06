@@ -26,6 +26,7 @@ impl Ui {
             Message::Navigate(Route::browse(query, format!("{kind} for “{text}”"), None))
         };
         let mut page = column![];
+        let tracks: Vec<&Track> = self.search_tracks(results);
         if let Some(top) = self.top_result(results) {
             let songs = show_all(
                 Query::SearchTracks {
@@ -33,7 +34,7 @@ impl Ui {
                 },
                 "Songs",
             );
-            page = page.push(self.search_top(top, &results.tracks, songs));
+            page = page.push(self.search_top(top, &tracks, songs));
         }
         if !results.artists.is_empty() {
             page = page.push(self.shelf(
@@ -93,7 +94,7 @@ impl Ui {
     fn search_top<'a>(
         &'a self,
         top: TopResult<'a>,
-        tracks: &'a [Track],
+        tracks: &[&'a Track],
         show_songs: Message,
     ) -> Element<'a> {
         let geometry: SearchTop = self.search_geometry(tracks.len());
@@ -209,13 +210,13 @@ impl Ui {
 
     /// The first songs as compact rows: thumbnail (a play button while hovered), title and
     /// artists, duration. Click selects, double-click plays.
-    fn search_songs<'a>(&'a self, tracks: &'a [Track], width: f32) -> Element<'a> {
+    fn search_songs<'a>(&'a self, tracks: &[&'a Track], width: f32) -> Element<'a> {
         let p: &Palette = &self.palette;
         let like_width: f32 = super::tracklist::LIKE_WIDTH;
         let text_width: f32 =
             width - 2.0 * ROW_PADDING - THUMB - 3.0 * THUMB_GAP - like_width - DURATION_WIDTH;
         let mut rows = column![];
-        for (index, item) in tracks.iter().enumerate().take(SEARCH_SONGS) {
+        for (index, &item) in tracks.iter().enumerate().take(SEARCH_SONGS) {
             let hovered: bool = self.hovered_row == Some(index);
             let selected: bool = self.selected_row == Some(index);
             let current: bool = self

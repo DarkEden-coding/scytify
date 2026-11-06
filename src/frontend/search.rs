@@ -38,13 +38,18 @@ impl<'a> TopResult<'a> {
     }
 }
 
-/// The top result for `text`, or `None` without any results.
-pub(super) fn top_result<'a>(results: &'a SearchResults, text: &str) -> Option<TopResult<'a>> {
+/// The top result for `text`, or `None` without any results. `first_track` is the first
+/// song that passes the lyrics filter.
+pub(super) fn top_result<'a>(
+    results: &'a SearchResults,
+    first_track: Option<&'a Track>,
+    text: &str,
+) -> Option<TopResult<'a>> {
     let query: String = text.trim().to_lowercase();
     let candidates = [
         results.artists.first().map(TopResult::Artist),
         results.albums.first().map(TopResult::Album),
-        results.tracks.first().map(TopResult::Track),
+        first_track.map(TopResult::Track),
     ];
     let mut best: Option<(u8, TopResult<'a>)> = None;
     for candidate in candidates.into_iter().flatten() {
@@ -101,7 +106,7 @@ mod tests {
         }
     }
     fn pick(r: &SearchResults, text: &str) -> &'static str {
-        match top_result(r, text) {
+        match top_result(r, r.tracks.first(), text) {
             Some(TopResult::Artist(_)) => "artist",
             Some(TopResult::Album(_)) => "album",
             Some(TopResult::Track(_)) => "track",

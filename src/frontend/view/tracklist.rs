@@ -155,12 +155,14 @@ impl Ui {
     }
 
     pub(in crate::frontend) fn track_view_active(&self) -> bool {
-        !self.track_filter.trim().is_empty() || self.track_sort != track_filter::Sort::Source
+        !self.track_filter.trim().is_empty()
+            || self.track_sort != track_filter::Sort::Source
+            || self.lyrics_filter.only
     }
 
     fn track_tools<'a>(&'a self, page: &Page<Track>) -> Element<'a> {
         let controls = row![
-            iced::widget::text_input("Find in loaded songs", &self.track_filter)
+            iced::widget::text_input("Find in this list", &self.track_filter)
                 .font(self.palette.font())
                 .size(self.palette.font_size.small)
                 .padding([8.0, 12.0])
@@ -175,17 +177,35 @@ impl Ui {
         ]
         .spacing(12)
         .align_y(Alignment::Center);
+        let loading: bool = self.track_view_active() && page.has_more;
+        let mut summary: String = if loading {
+            match page.total {
+                Some(total) => format!("Loading all songs… {} of {total}", page.items.len()),
+                None => format!("Loading all songs… {}", page.items.len()),
+            }
+        } else {
+            format!("{} loaded · Playback in source order", page.items.len())
+        };
+        if let Some(status) = self.lyrics_status() {
+            summary = format!("{summary} · {status}");
+        }
         let mut info = row![
-            self.subdued(format!(
-                "{} loaded · Playback in source order",
-                page.items.len()
+            self.subdued(self.fit(
+                &summary,
+                (self.main_size.width - 200.0).max(0.0),
+                self.palette.font_size.small
             ))
             .size(self.palette.font_size.small)
             .width(Length::Fill)
         ]
         .spacing(8)
         .align_y(Alignment::Center);
-        if page.has_more && page.items.len() < paging::MAX_LOADED_ITEMS {
+        let cap: usize = if self.track_view_active() {
+            paging::MAX_SEARCHED_ITEMS
+        } else {
+            paging::MAX_LOADED_ITEMS
+        };
+        if page.has_more && page.items.len() < cap {
             let mut more = self.control(self.label(if self.more_pending.is_some() {
                 "Loading…"
             } else {
@@ -212,7 +232,7 @@ impl Ui {
         columns: &Columns,
     ) -> Element<'a> {
         if self.track_view_active() {
-            let indices = track_filter::indices(items, &self.track_filter, self.track_sort);
+            let indices = self.track_indices(items);
             let (start, end) = crate::frontend::layout::visible_rows(
                 indices.len(),
                 self.scroll - self.content_top(data),
@@ -227,7 +247,7 @@ impl Ui {
             }
             rows = rows.push(space().height((indices.len() - end) as f32 * height));
             if indices.is_empty() {
-                rows = rows.push(self.subdued("No matching songs in the loaded section"));
+                rows = rows.push(self.subdued("No matching songs"));
             }
             return container(rows).padding([0.0, CONTENT_PADDING]).into();
         }

@@ -61,6 +61,16 @@ pub fn can_extend(data: &PageData) -> bool {
     more && len < MAX_LOADED_ITEMS
 }
 
+/// Songs loaded while a search, sort or filter needs the whole list. Spotify caps a
+/// playlist at 10 000 songs.
+pub const MAX_SEARCHED_ITEMS: usize = 10_000;
+
+/// Whether another page may be appended when the whole list is wanted.
+pub fn can_extend_all(data: &PageData) -> bool {
+    let (len, _, more) = page_info(data);
+    more && len < MAX_SEARCHED_ITEMS
+}
+
 /// Length of the scroll list: placeholders before the run, the run, and placeholders for
 /// the rest of the known total. Without a total the list ends with the run.
 pub fn slots(data: &PageData) -> usize {

@@ -3,7 +3,6 @@ pub mod app_icon;
 pub mod backend;
 pub mod contracts;
 pub mod desktop;
-pub mod dock_icon;
 pub mod domain;
 pub mod frontend;
 pub mod migrate;

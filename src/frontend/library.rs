@@ -213,17 +213,16 @@ impl Ui {
         }
         if let Some(data) = &self.data {
             let (start, end) = self.browser_window(data);
-            let tracks: &[Track] = match data {
-                PageData::Tracks(page) => &page.items[start..end],
-                PageData::Search(results) => &results.tracks[start..end],
-                _ => &[],
+            let tracks: Vec<&Track> = match data {
+                PageData::Tracks(page) => page.items[start..end].iter().collect(),
+                PageData::Search(results) => self.search_tracks(results)[start..end].to_vec(),
+                _ => Vec::new(),
             };
             items.extend(tracks.iter().map(|t| LibraryItem::Track(t.id.clone())));
             if let PageData::Tracks(page) = data
                 && self.track_view_active()
             {
-                let indices =
-                    track_filter::indices(&page.items, &self.track_filter, self.track_sort);
+                let indices = self.track_indices(&page.items);
                 let (start, end) = layout::visible_rows(
                     indices.len(),
                     self.scroll - self.content_top(data),

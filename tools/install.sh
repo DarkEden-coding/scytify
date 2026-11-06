@@ -9,6 +9,14 @@ if [[ "$(uname -s)" == Darwin ]]; then
     exec tools/install-macos.sh
 fi
 
+# Started by the app's own update: it quits itself once this script returns, so open the new
+# build after its process (SCYTIFY_UPDATE_PID) has gone.
+relaunch_after_exit() {
+    local pid=$1; shift
+    nohup sh -c 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"' "$pid" "$@" \
+        >/dev/null 2>&1 </dev/null &
+}
+
 name=scytify
 bin="$HOME/.local/bin/$name"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -16,7 +24,8 @@ data="${XDG_DATA_HOME:-$HOME/.local/share}"
 cargo build --release
 
 was_running=false
-if pgrep -x "$name" >/dev/null; then
+# An update started from the app leaves quitting and relaunching to the app.
+if [ -z "${SCYTIFY_UPDATE_PID:-}" ] && pgrep -x "$name" >/dev/null; then
     was_running=true
     echo "Quitting the running app..."
     dbus-send --session --type=method_call \
@@ -48,6 +57,11 @@ update-desktop-database -q "$data/applications" 2>/dev/null || true
 kbuildsycoca6 >/dev/null 2>&1 || true
 
 echo "Installed $bin"
+if [ -n "${SCYTIFY_UPDATE_PID:-}" ]; then
+    relaunch_after_exit "$SCYTIFY_UPDATE_PID" setsid "$bin"
+    echo "Relaunching after the app quits."
+    exit 0
+fi
 if $was_running; then
     setsid -f "$bin" >/dev/null 2>&1 </dev/null
     echo "Relaunched."

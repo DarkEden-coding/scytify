@@ -1,5 +1,6 @@
 //! Self-update from the git checkout the binary was built in: notice when its upstream branch
-//! has new commits, then pull and rerun the install script, which quits and relaunches the app.
+//! has new commits, then pull and rerun the install script. The app then quits itself and the script's watcher
+//! opens the new build.
 use std::{
     os::unix::process::CommandExt,
     path::Path,
@@ -39,7 +40,8 @@ pub(super) async fn check() -> bool {
 }
 
 /// Pull and reinstall in a separate process group, so the script survives this app quitting.
-/// On success the script relaunches the new build; an `Err` means the update stopped early and
+/// On success the new build is installed and a watcher opens it once this process has exited,
+/// so the caller must quit; an `Err` means the update stopped early and
 /// this instance keeps running. Output goes to `scytify-update.log` in the temp directory.
 pub(super) async fn install() -> Result<(), String> {
     tokio::task::spawn_blocking(|| {
@@ -53,6 +55,7 @@ pub(super) async fn install() -> Result<(), String> {
             ])
             .current_dir(REPO)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("SCYTIFY_UPDATE_PID", std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
             .stderr(log)

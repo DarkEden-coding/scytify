@@ -7,6 +7,7 @@ mod icons;
 mod layout;
 mod library;
 mod lyrics;
+mod lyrics_filter;
 mod measure;
 mod navigation;
 mod paging;
@@ -87,6 +88,8 @@ enum Message {
     SelectRow(usize),
     TrackFilter(String),
     TrackSort(track_filter::Sort),
+    /// Show only songs that have lyrics.
+    LyricsOnly(bool),
     TrackMore,
     RowMove(bool),
     PlaySelected,
@@ -119,6 +122,8 @@ enum Message {
     UpdateChecked(bool),
     /// Pull and reinstall from the checkout this was built from.
     Update,
+    /// The new build is installed; quit so it can open.
+    UpdateInstalled,
     UpdateFailed(String),
     /// Show listening stats over another range, in place.
     StatsRange(StatsRange),
@@ -274,6 +279,7 @@ struct Ui {
     selected_row: Option<usize>,
     track_filter: String,
     track_sort: track_filter::Sort,
+    lyrics_filter: lyrics_filter::LyricsFilter,
     track_menu: Option<Box<Track>>,
     /// Song whose "Save in" sheet is open: Liked Songs, its album and the user's playlists.
     save_sheet: Option<Box<Track>>,
@@ -442,6 +448,7 @@ impl Ui {
             selected_row: None,
             track_filter: String::new(),
             track_sort: track_filter::Sort::Source,
+            lyrics_filter: Default::default(),
             track_menu: None,
             save_sheet: None,
             queue_data: None,
@@ -599,6 +606,7 @@ impl Ui {
         self.selected_row = None;
         self.track_filter.clear();
         self.track_sort = track_filter::Sort::Source;
+        self.lyrics_filter.restart();
         self.track_menu = None;
         self.save_sheet = None;
         let artist_top = self.artist_top_pending.take();
@@ -637,10 +645,13 @@ impl Ui {
         if self.home || self.settings || self.pending.is_some() {
             return;
         }
+        self.probe_lyrics();
         let Some(data) = &self.data else {
             return;
         };
+        // Searching, sorting and the lyrics filter work on loaded songs only, so load them all.
         if matches!(data, PageData::Tracks(_)) && self.track_view_active() {
+            self.load_all_tracks();
             return;
         }
         let wanted: Option<paging::Fill> = paging::wanted_fill(data, self.visible_slots(data));
@@ -667,6 +678,42 @@ impl Ui {
             self.requests.insert(id, self.generation);
         }
     }
+    /// Fetch the next page of the song list until all of it is loaded, so searching finds
+    /// every song without "Load more". A run that starts partway down is replaced by the
+    /// list from its start.
+    fn load_all_tracks(&mut self) {
+        if self.more_pending.is_some() {
+            return;
+        }
+        let Some(data @ PageData::Tracks(page)) = &self.data else {
+            return;
+        };
+        let fill = if page.offset > 0 {
+            paging::Fill {
+                kind: paging::FillKind::Replace,
+                offset: 0,
+                limit: MAX_PAGE_SIZE,
+            }
+        } else if paging::can_extend_all(data) {
+            paging::Fill {
+                kind: paging::FillKind::Append,
+                offset: paging::next_offset(data),
+                limit: MAX_PAGE_SIZE,
+            }
+        } else {
+            return;
+        };
+        if let Some(id) = self.send(Action::Fetch {
+            query: self.query.clone(),
+            page: PageRequest {
+                offset: fill.offset,
+                limit: fill.limit,
+            },
+        }) {
+            self.more_pending = Some((id, fill));
+            self.requests.insert(id, self.generation);
+        }
+    }
     /// Join a fetched page to the loaded run. A page that does not join it replaces the run.
     fn apply_fill(&mut self, kind: paging::FillKind, page: PageData) {
         let rejected: Option<PageData> = match (kind, &mut self.data) {
@@ -676,6 +723,7 @@ impl Ui {
         };
         if let Some(page) = rejected {
             self.data = Some(page);
+            self.lyrics_filter.restart();
         }
     }
     /// Fetch the saved-albums shelf while Home is visible and signed in, once per page load.
@@ -815,6 +863,7 @@ impl Ui {
         self.artist_top = None;
         self.artist_top_failed = false;
         self.liked_count = None;
+        self.lyrics_filter.clear();
         self.library.clear();
         self.playlist_edits.clear();
         self.sidebar_pending = None;
@@ -1210,6 +1259,8 @@ impl Ui {
                     self.queue_offset = 0;
                     self.fetch_queue();
                 }
+                // A newly stored lyrics key lets the lyrics filter start checking.
+                self.probe_lyrics();
                 // After restored preferences, which may reopen the lyrics view.
                 return self.sync_lyrics();
             }
@@ -1235,6 +1286,12 @@ impl Ui {
             }
             Message::Backend(Event::Completed { id, result }) => {
                 if !self.active.remove(&id) {
+                    return Task::none();
+                }
+                // Lookups for the lyrics filter report nothing but what they find.
+                if self.lyrics_filter.finish(id, &result) {
+                    self.quiet.remove(&id);
+                    self.probe_lyrics();
                     return Task::none();
                 }
                 // Lyrics outcomes, failures included, are shown in the lyrics view.
@@ -1489,10 +1546,16 @@ impl Ui {
                 if !self.updating {
                     self.updating = true;
                     return Task::perform(update::install(), |result| match result {
-                        Ok(()) => Message::CheckUpdate,
+                        Ok(()) => Message::UpdateInstalled,
                         Err(error) => Message::UpdateFailed(error),
                     });
                 }
+            }
+            Message::UpdateInstalled => {
+                // The installer's watcher opens the new build once this process has exited.
+                self.updating = false;
+                self.update_available = false;
+                return self.reduce(Message::Action(Action::Quit));
             }
             Message::UpdateFailed(error) => {
                 self.updating = false;
@@ -1530,12 +1593,22 @@ impl Ui {
                 self.selected_row = None;
                 self.scroll = 0.0;
                 self.reset_scroll = true;
+                self.ensure_window();
             }
             Message::TrackSort(sort) => {
                 self.track_sort = sort;
                 self.selected_row = None;
                 self.scroll = 0.0;
                 self.reset_scroll = true;
+                self.ensure_window();
+            }
+            Message::LyricsOnly(only) => {
+                self.lyrics_filter.set_only(only);
+                self.selected_row = None;
+                self.hovered_row = None;
+                self.scroll = 0.0;
+                self.reset_scroll = true;
+                self.ensure_window();
             }
             Message::TrackMenu(track) => self.track_menu = Some(track),
             Message::CloseTrackMenu => self.track_menu = None,
@@ -1558,7 +1631,8 @@ impl Ui {
             Message::TrackMore => {
                 if self.more_pending.is_none()
                     && let Some(data) = &self.data
-                    && paging::can_extend(data)
+                    && (paging::can_extend(data)
+                        || self.track_view_active() && paging::can_extend_all(data))
                 {
                     let fill = paging::Fill {
                         kind: paging::FillKind::Append,
@@ -1586,8 +1660,7 @@ impl Ui {
                     return Task::none();
                 }
                 if let Some(PageData::Tracks(page)) = &self.data {
-                    let indices =
-                        track_filter::indices(&page.items, &self.track_filter, self.track_sort);
+                    let indices = self.track_indices(&page.items);
                     let position = self
                         .selected_row
                         .and_then(|i| indices.iter().position(|&n| n + page.offset as usize == i));
@@ -1713,6 +1786,7 @@ impl Ui {
                 let key: String = self.lyrics_key.trim().to_owned();
                 if !key.is_empty() && self.send(Action::SetLyricsKey(Some(key))).is_some() {
                     self.lyrics_key.clear();
+                    self.lyrics_filter.error = None;
                     // Fetch again with the new key.
                     self.lyrics.reset(None, None);
                 }
@@ -2184,7 +2258,11 @@ impl Ui {
     /// The search overview's top result for the current search text.
     fn top_result<'a>(&self, results: &'a SearchResults) -> Option<search::TopResult<'a>> {
         match &self.query {
-            Query::Search { text } => search::top_result(results, text),
+            Query::Search { text } => search::top_result(
+                results,
+                results.tracks.iter().find(|t| self.lyrics_filter.keeps(t)),
+                text,
+            ),
             _ => None,
         }
     }
@@ -2205,7 +2283,7 @@ impl Ui {
         let shelf: f32 = self.shelf_height();
         let top: Option<layout::SearchTop> = self
             .top_result(results)
-            .map(|_| self.search_geometry(results.tracks.len()));
+            .map(|_| self.search_geometry(self.search_tracks(results).len()));
         let mut y: f32 = top.map_or(0.0, |top| top.height());
         let mut place = |present: bool| -> Option<f32> {
             present.then(|| {
@@ -2282,7 +2360,10 @@ impl Ui {
         let offset: f32 = self.scroll - self.content_top(data);
         match data {
             PageData::Search(results) => match self.search_layout(results).top {
-                Some(top) => block(results.tracks.len().min(layout::SEARCH_SONGS), top.height()),
+                Some(top) => block(
+                    self.search_tracks(results).len().min(layout::SEARCH_SONGS),
+                    top.height(),
+                ),
                 None => (0, 0),
             },
             // A short, unvirtualized page.
@@ -3230,6 +3311,92 @@ mod browsing_tests {
         assert_eq!(ui.state.player.status, PlaybackStatus::Paused);
     }
 
+    /// Typing in a playlist's search loads the rest of the playlist page by page, so results
+    /// cover every song without "Load more".
+    #[test]
+    fn searching_a_playlist_loads_all_of_it() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        ui.home = false;
+        ui.query = Query::LikedTracks;
+        let page = |offset: u64, has_more: bool| {
+            PageData::Tracks(Page {
+                offset,
+                total: Some(300),
+                items: (0..100)
+                    .map(|i| track(&format!("t{}", offset + i), Some(offset + i)))
+                    .collect(),
+                has_more,
+                next_offset: offset + 100,
+            })
+        };
+        ui.data = Some(page(0, true));
+        let _ = ui.update(Message::TrackFilter("t".into()));
+        for offset in [100, 200] {
+            let command = back.commands.try_recv().unwrap();
+            assert!(matches!(
+                command.action,
+                Action::Fetch { page: PageRequest { offset: o, .. }, .. } if o == offset
+            ));
+            complete(
+                &mut ui,
+                command.id,
+                Response::Page(page(offset, offset < 200)),
+            );
+        }
+        assert_eq!(paging::page_info(ui.data.as_ref().unwrap()).0, 300);
+        assert!(back.commands.try_recv().is_err(), "nothing left to load");
+    }
+
+    /// With "Only songs with lyrics" a song shows once the provider is known to have lyrics
+    /// for it; songs are checked two at a time.
+    #[test]
+    fn lyrics_filter_shows_songs_as_their_lyrics_are_found() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        ui.home = false;
+        ui.query = Query::LikedTracks;
+        ui.state.lyrics_key_set = true;
+        ui.data = Some(PageData::Tracks(Page {
+            offset: 0,
+            total: Some(3),
+            items: vec![
+                track("a", Some(0)),
+                track("b", Some(1)),
+                track("c", Some(2)),
+            ],
+            has_more: false,
+            next_offset: 3,
+        }));
+        let _ = ui.update(Message::LyricsOnly(true));
+        let Some(PageData::Tracks(page)) = &ui.data else {
+            unreachable!()
+        };
+        assert!(ui.track_indices(&page.items).is_empty());
+        let (a, b) = (
+            back.commands.try_recv().unwrap(),
+            back.commands.try_recv().unwrap(),
+        );
+        assert!(back.commands.try_recv().is_err(), "two lookups at a time");
+        assert!(matches!(&a.action, Action::Lyrics { track_id } if track_id.0 == "a"));
+        complete(&mut ui, a.id, Response::Lyrics(None));
+        let c = back.commands.try_recv().unwrap();
+        assert!(matches!(&c.action, Action::Lyrics { track_id } if track_id.0 == "c"));
+        let found = Lyrics {
+            track_id: SpotifyId("b".into()),
+            sync: LyricsSync::Static,
+            lines: vec![],
+            credit: LyricsCredit {
+                source: LyricsSource::Unknown,
+                uploader: None,
+                maker: None,
+            },
+        };
+        complete(&mut ui, b.id, Response::Lyrics(Some(found)));
+        let Some(PageData::Tracks(page)) = &ui.data else {
+            unreachable!()
+        };
+        assert_eq!(ui.track_indices(&page.items), vec![1]);
+    }
+
     /// Filtering/sorting selects source occurrences, including repeated track IDs, and
     /// loading another page follows the raw continuation instead of a display index.
     #[test]
@@ -3254,6 +3421,17 @@ mod browsing_tests {
         }));
         let _ = ui.update(Message::TrackFilter("ALP".into()));
         let _ = ui.update(Message::TrackSort(track_filter::Sort::Title));
+        // Filtering loads the whole list from its start; this test keeps the run it has.
+        let auto = back.commands.try_recv().unwrap();
+        assert!(matches!(
+            auto.action,
+            Action::Fetch {
+                page: PageRequest { offset: 0, .. },
+                ..
+            }
+        ));
+        ui.more_pending = None;
+        assert!(back.commands.try_recv().is_err());
         let _ = ui.update(Message::RowMove(true));
         assert_eq!(ui.selected_row, Some(101));
         let _ = ui.update(Message::RowMove(true));
@@ -3285,6 +3463,15 @@ mod browsing_tests {
         );
         assert_eq!(ui.track_filter, "ALP");
         assert_eq!(paging::page_info(ui.data.as_ref().unwrap()).0, 4);
+        // The run still starts partway down, so the filter loads the list from its start,
+        // and asks for nothing else.
+        assert!(matches!(
+            back.commands.try_recv().unwrap().action,
+            Action::Fetch {
+                page: PageRequest { offset: 0, .. },
+                ..
+            }
+        ));
         assert!(
             back.commands.try_recv().is_err(),
             "filter does not request unfiltered viewport pages"
