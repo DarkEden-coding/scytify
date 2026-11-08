@@ -53,7 +53,16 @@ impl Ui {
         // Only the head of the list starts from its first track; a run loaded further down
         // would play from the middle.
         let first_playable: Option<usize> = (page.offset == 0)
-            .then(|| page.items.iter().position(|t| t.playable))
+            .then(|| {
+                if self.lyrics_filter.only {
+                    // The first song shown, which is not the list's first.
+                    self.track_indices(&page.items)
+                        .into_iter()
+                        .find(|&i| page.items[i].playable)
+                } else {
+                    page.items.iter().position(|t| t.playable)
+                }
+            })
             .flatten();
         let mut actions = row![].spacing(CONTENT_PADDING).align_y(Alignment::Center);
         if self.page_is_playing_context() {
@@ -295,6 +304,21 @@ impl Ui {
         index: usize,
     ) -> PlaySource {
         let track: &Track = &items[index];
+        // With the lyrics filter on, playback follows the songs shown, in the order shown, so
+        // Next, Previous and autoplay skip the songs without lyrics.
+        if self.lyrics_filter.only {
+            let shown: Vec<usize> = self
+                .track_indices(items)
+                .into_iter()
+                .filter(|&i| items[i].playable)
+                .collect();
+            if let Some(start) = shown.iter().position(|&i| i == index) {
+                return PlaySource::Tracks {
+                    tracks: shown.iter().map(|&i| items[i].clone()).collect(),
+                    start,
+                };
+            }
+        }
         let start_offset: u64 = track.source_index.unwrap_or(first + index as u64);
         match &self.query {
             Query::PlaylistTracks { playlist_id } => PlaySource::Playlist {

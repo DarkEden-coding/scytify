@@ -188,7 +188,7 @@ pub(super) fn context_uri(source: &PlaySource, user_id: &str) -> Option<(String,
         PlaySource::LikedSongs { start_offset } => {
             Some((format!("spotify:user:{user_id}:collection"), *start_offset))
         }
-        PlaySource::Track(_) => None,
+        PlaySource::Track(_) | PlaySource::Tracks { .. } => None,
     }
 }
 

@@ -10,6 +10,8 @@ use crate::{
 
 /// Queue source identity of Liked Songs, which has no Spotify ID or snapshot.
 const LIKED_SONGS_SOURCE: &str = "liked-songs";
+/// Source id of an explicit track list (`PlaySource::Tracks`), which is no Spotify collection.
+const FILTERED_SOURCE: &str = "track-list";
 /// Items per source membership page, the Web API maximum.
 const SOURCE_PAGE: u64 = 50;
 /// Artist discography requests accept at most 10 albums in development mode.
@@ -120,6 +122,16 @@ impl Api {
         source: &PlaySource,
         selected: Option<&Track>,
     ) -> Result<LoadedSource, AppError> {
+        // The list is already known, so there is nothing to fetch.
+        if let PlaySource::Tracks { tracks, start } = source {
+            return Ok(LoadedSource {
+                source_id: SpotifyId(FILTERED_SOURCE.into()),
+                snapshot_id: FILTERED_SOURCE.into(),
+                tracks: tracks.iter().map(|t| t.id.clone()).collect(),
+                metadata: tracks.clone(),
+                start: *start,
+            });
+        }
         let (path, offset, source_id) = match source {
             PlaySource::Playlist {
                 playlist_id,
@@ -142,7 +154,7 @@ impl Api {
                 *start_offset,
                 SpotifyId(LIKED_SONGS_SOURCE.into()),
             ),
-            PlaySource::Track(_) => {
+            PlaySource::Track(_) | PlaySource::Tracks { .. } => {
                 return Err(err(ErrorKind::InvalidInput, "track is not a collection"));
             }
         };

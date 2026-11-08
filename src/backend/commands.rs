@@ -161,7 +161,10 @@ pub(super) fn handle_command(
         show_spirc_command(&action, q, state);
         return Some(Ok(Response::Accepted));
     }
+    // An explicit list is no Spotify context: it loads like any other source below, and
+    // `load_current` hands the queue it builds to Connect.
     if let Action::Play(source) = &action
+        && !matches!(source, PlaySource::Tracks { .. })
         && player.as_ref().is_some_and(|p| p.connect.is_some())
     {
         return Some(play_with_connect(source, store, q, state, player, metadata));

@@ -230,6 +230,16 @@ impl Api {
     async fn play_body(&self, token: &str, source: &PlaySource) -> Result<Value, AppError> {
         Ok(match source {
             PlaySource::Track(id) => json!({"uris": [track_uri(id)?], "position_ms": 0}),
+            PlaySource::Tracks { tracks, start } => {
+                // Web API play accepts at most 100 URIs: the selected song and what follows.
+                let uris = tracks
+                    .iter()
+                    .skip(*start)
+                    .take(100)
+                    .map(|t| track_uri(&t.id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                json!({"uris": uris, "offset": {"position": 0}, "position_ms": 0})
+            }
             PlaySource::Playlist {
                 playlist_id,
                 start_offset,

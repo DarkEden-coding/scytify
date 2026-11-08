@@ -1436,7 +1436,7 @@ impl Ui {
                     return iced::exit();
                 }
                 if let Action::Play(source) = &action {
-                    self.play_context = context_query(source);
+                    self.play_context = self.context_for(source);
                 }
                 if matches!(action, Action::Logout) {
                     self.clear_account();
@@ -1445,7 +1445,7 @@ impl Ui {
             }
             Message::PlayTrack(source, track) => {
                 self.track_menu = None;
-                self.play_context = context_query(&source);
+                self.play_context = self.context_for(&source);
                 if let Some(request) = self.send(Action::Play(source)) {
                     let pending =
                         pending_play::PendingPlay::new(*track, request, &self.state.player);
@@ -2446,6 +2446,17 @@ fn passing(kind: ErrorKind) -> bool {
     )
 }
 
+impl Ui {
+    /// The page whose play button reflects `source`. A filtered list stands for the page it
+    /// was taken from.
+    fn context_for(&self, source: &PlaySource) -> Option<Query> {
+        match source {
+            PlaySource::Tracks { .. } => Some(self.query.clone()),
+            _ => context_query(source),
+        }
+    }
+}
+
 fn context_query(source: &PlaySource) -> Option<Query> {
     match source {
         PlaySource::Playlist { playlist_id, .. } => Some(Query::PlaylistTracks {
@@ -2455,7 +2466,7 @@ fn context_query(source: &PlaySource) -> Option<Query> {
             album_id: album_id.clone(),
         }),
         PlaySource::LikedSongs { .. } => Some(Query::LikedTracks),
-        PlaySource::Track(_) => None,
+        PlaySource::Track(_) | PlaySource::Tracks { .. } => None,
     }
 }
 /// Repeat mode after the repeat button or Ctrl+R: off, whole queue, one track.

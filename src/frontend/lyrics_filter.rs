@@ -73,7 +73,11 @@ impl LyricsFilter {
             }
             // Passing trouble: wait it out, then check this song again.
             Err(e) if passing(e.kind) => {
-                let default = if e.kind == ErrorKind::RateLimited { 60 } else { 5 };
+                let default = if e.kind == ErrorKind::RateLimited {
+                    60
+                } else {
+                    5
+                };
                 let wait = Duration::from_secs(e.retry_after_seconds.unwrap_or(default));
                 let until = now + wait.min(MAX_PAUSE);
                 self.retry_at = Some(self.retry_at.map_or(until, |at| at.max(until)));
@@ -223,7 +227,11 @@ mod tests {
             })
         };
         filter.probes.insert(RequestId(1), SpotifyId("a".into()));
-        assert!(filter.finish_at(RequestId(1), &failure(ErrorKind::RateLimited, Some(30)), now));
+        assert!(filter.finish_at(
+            RequestId(1),
+            &failure(ErrorKind::RateLimited, Some(30)),
+            now
+        ));
         assert_eq!(filter.cursor, 0, "the song is checked again");
         assert!(filter.error.is_none());
         assert!(filter.paused(now + Duration::from_secs(29)));
@@ -232,11 +240,49 @@ mod tests {
 
         filter.probes.insert(RequestId(2), SpotifyId("a".into()));
         filter.finish_at(RequestId(2), &failure(ErrorKind::Unavailable, None), now);
-        assert!(filter.paused(now + Duration::from_secs(4)), "short default pause");
+        assert!(
+            filter.paused(now + Duration::from_secs(4)),
+            "short default pause"
+        );
 
         filter.probes.insert(RequestId(3), SpotifyId("a".into()));
         filter.finish_at(RequestId(3), &failure(ErrorKind::Authentication, None), now);
         assert!(filter.error.is_some());
+    }
+
+    #[test]
+    fn playback_follows_the_songs_shown_while_the_filter_is_on() {
+        let (mut ui, _back) = channel_tests::fixture();
+        let track = |id: &str, source_index: u64| Track {
+            id: SpotifyId(id.into()),
+            name: id.into(),
+            artists: vec![],
+            album: None,
+            duration_ms: 0,
+            playable: true,
+            source_index: Some(source_index),
+        };
+        let items = vec![track("a", 0), track("b", 1), track("c", 2), track("d", 3)];
+        ui.query = Query::PlaylistTracks {
+            playlist_id: SpotifyId("mix".into()),
+        };
+        assert!(matches!(
+            ui.source(&items, 0, 2),
+            PlaySource::Playlist {
+                start_offset: 2,
+                ..
+            }
+        ));
+        ui.lyrics_filter.set_only(true);
+        for (id, found) in [("b", false), ("c", true), ("d", true)] {
+            ui.lyrics_filter.known.insert(SpotifyId(id.into()), found);
+        }
+        let PlaySource::Tracks { tracks, start } = ui.source(&items, 0, 3) else {
+            panic!("a filtered list plays as an explicit list");
+        };
+        let ids: Vec<&str> = tracks.iter().map(|t| t.id.0.as_str()).collect();
+        assert_eq!(ids, ["c", "d"], "only songs with lyrics, in list order");
+        assert_eq!(start, 1, "starts at the row played");
     }
 
     #[test]

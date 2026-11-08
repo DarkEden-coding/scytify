@@ -199,6 +199,9 @@ pub enum PlaySource {
         start_offset: u64,
     },
     Track(SpotifyId),
+    /// An explicit ordered list, such as a playlist narrowed by the lyrics filter. Playback
+    /// follows exactly this list; `start` indexes into it.
+    Tracks { tracks: Vec<Track>, start: usize },
 }
 
 #[derive(Clone, Debug)]
