@@ -119,6 +119,8 @@ enum Message {
     /// Open listening stats, or reload them while open.
     Stats,
     CheckUpdate,
+    /// The lyrics filter's pause may have run out.
+    LyricsFilterTick,
     UpdateChecked(bool),
     /// Pull and reinstall from the checkout this was built from.
     Update,
@@ -1193,6 +1195,7 @@ impl Ui {
                 self.send(Action::SetVisible(visible));
             }
             Message::Window(_, _) | Message::Tick => {}
+            Message::LyricsFilterTick => self.probe_lyrics(),
             Message::Disconnected => {
                 self.disconnected = true;
                 self.notice = "Backend disconnected; checkpoint not confirmed. Use Quit or close to exit without saving.".into()
@@ -1998,6 +2001,14 @@ impl Ui {
             iced::event::listen_with(shortcut),
             iced::time::every(update::CHECK_INTERVAL).map(|_| Message::CheckUpdate),
         ]);
+        let events: Subscription<Message> = if self.lyrics_filter.retry_at.is_some() {
+            Subscription::batch([
+                events,
+                iced::time::every(Duration::from_secs(1)).map(|_| Message::LyricsFilterTick),
+            ])
+        } else {
+            events
+        };
         let events: Subscription<Message> = if self.split_drag.is_some() {
             Subscription::batch([events, iced::event::listen_with(split_drag)])
         } else {

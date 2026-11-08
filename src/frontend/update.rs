@@ -1,6 +1,6 @@
-//! Self-update from the git checkout the binary was built in: notice when its upstream branch
-//! has new commits, then pull and rerun the install script. The app then quits itself and the script's watcher
-//! opens the new build.
+//! Self-update from the git checkout the binary was built in: notice when the installed build
+//! lags the checkout's `HEAD` or the checkout lags its upstream branch, then pull and rerun the
+//! install script. The app then quits itself and the script's watcher opens the new build.
 use std::{
     os::unix::process::CommandExt,
     path::Path,
@@ -13,30 +13,39 @@ const REPO: &str = env!("CARGO_MANIFEST_DIR");
 /// How often the upstream branch is fetched.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
-/// Fetch the upstream branch and report whether it has commits the checkout lacks. Any git
-/// failure (no checkout, no upstream, offline) reports no update.
+/// Commit this binary was built from; empty when it was built outside a git checkout.
+const BUILT_COMMIT: &str = env!("SCYTIFY_BUILD_COMMIT");
+
+/// Report whether the installed app is out of date: the checkout's `HEAD` is not the commit this
+/// binary was built from (something pulled without reinstalling), or the upstream branch has
+/// commits the checkout lacks. The upstream is fetched first; if that fails (offline) only the
+/// local comparison runs. No checkout or an unreadable `HEAD` reports no update.
 pub(super) async fn check() -> bool {
     tokio::task::spawn_blocking(|| {
-        if !Path::new(REPO).join(".git").exists() || !git(&["fetch", "--quiet"]) {
+        if !Path::new(REPO).join(".git").exists() {
             return false;
         }
-        Command::new("git")
-            .args(["rev-list", "--count", "HEAD..@{u}"])
-            .current_dir(REPO)
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .and_then(|out| {
-                String::from_utf8_lossy(&out.stdout)
-                    .trim()
-                    .parse::<u32>()
-                    .ok()
-            })
-            .is_some_and(|behind| behind > 0)
+        let fetched = git(&["fetch", "--quiet"]);
+        let head = git_output(&["rev-parse", "HEAD"]);
+        if head
+            .as_deref()
+            .is_some_and(|head| installed_is_stale(BUILT_COMMIT, head))
+        {
+            return true;
+        }
+        fetched
+            && git_output(&["rev-list", "--count", "HEAD..@{u}"])
+                .and_then(|count| count.parse::<u32>().ok())
+                .is_some_and(|behind| behind > 0)
     })
     .await
     .unwrap_or(false)
+}
+
+/// Whether a binary built from `built` lags the checkout at `head`. An unknown build commit
+/// can't be compared, so it is never stale.
+fn installed_is_stale(built: &str, head: &str) -> bool {
+    !built.is_empty() && built != head
 }
 
 /// Pull and reinstall in a separate process group, so the script survives this app quitting.
@@ -72,6 +81,17 @@ pub(super) async fn install() -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+fn git_output(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
+        .current_dir(REPO)
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
 fn git(args: &[&str]) -> bool {
     Command::new("git")
         .args(args)
@@ -82,4 +102,16 @@ fn git(args: &[&str]) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installed_is_stale;
+
+    #[test]
+    fn stale_only_when_built_commit_differs_from_head() {
+        assert!(installed_is_stale("aaa", "bbb"));
+        assert!(!installed_is_stale("aaa", "aaa"));
+        assert!(!installed_is_stale("", "bbb"));
+    }
 }

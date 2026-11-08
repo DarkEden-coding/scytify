@@ -4,6 +4,10 @@ use crate::{
     domain::*,
 };
 use serde::Deserialize;
+use std::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 const KEY_ENTRY: &str = "spicy-lyrics-key";
 
@@ -82,7 +86,69 @@ fn validate_key(key: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Minimum spacing between requests to the lyrics provider, however many lookups are queued
+/// (the lyrics panel, the "only songs with lyrics" filter), so a long list is checked slowly
+/// instead of in a burst the provider would throttle.
+const REQUEST_SPACING: Duration = Duration::from_millis(500);
+/// Pause after a rate limit that names no wait of its own.
+const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// When the next request may go out, and until when the provider has asked us to stay away.
+#[derive(Default)]
+struct Gate {
+    next: Option<Instant>,
+    cooldown_until: Option<Instant>,
+}
+
+static GATE: Mutex<Gate> = Mutex::new(Gate {
+    next: None,
+    cooldown_until: None,
+});
+
+impl Gate {
+    /// Claim the next send slot. Fails with the remaining wait while the provider has us
+    /// cooling down, so queued lookups give up at once instead of holding backend jobs.
+    fn reserve(&mut self, now: Instant) -> Result<Instant, AppError> {
+        if let Some(until) = self.cooldown_until.filter(|until| *until > now) {
+            let mut error = safe(
+                ErrorKind::RateLimited,
+                "Spicy Lyrics rate limit reached; retry later",
+            );
+            error.retry_after_seconds = Some((until - now).as_secs() + 1);
+            return Err(error);
+        }
+        let slot = self.next.filter(|next| *next > now).unwrap_or(now);
+        self.next = Some(slot + REQUEST_SPACING);
+        Ok(slot)
+    }
+
+    fn rate_limited(&mut self, now: Instant, retry_after: Option<u64>) {
+        let wait = retry_after.map_or(DEFAULT_COOLDOWN, Duration::from_secs);
+        self.cooldown_until = Some(now + wait);
+    }
+}
+
 pub(super) async fn fetch(
+    request: reqwest::RequestBuilder,
+    track_id: &SpotifyId,
+) -> Result<Option<Lyrics>, AppError> {
+    let slot = GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .reserve(Instant::now())?;
+    tokio::time::sleep_until(slot.into()).await;
+    let result = send(request, track_id).await;
+    if let Err(error) = &result
+        && error.kind == ErrorKind::RateLimited
+    {
+        GATE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rate_limited(Instant::now(), error.retry_after_seconds);
+    }
+    result
+}
+
+async fn send(
     request: reqwest::RequestBuilder,
     track_id: &SpotifyId,
 ) -> Result<Option<Lyrics>, AppError> {
@@ -95,7 +161,21 @@ pub(super) async fn fetch(
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok());
-    if !check_status(response.status().as_u16(), retry_after)? {
+    let http_status = response.status().as_u16();
+    if !(200..300).contains(&http_status) && http_status != 404 {
+        // Name the provider's own reason, so a rejected key reads differently from a throttle.
+        let reason = response
+            .bytes()
+            .await
+            .ok()
+            .and_then(|bytes| error_code(&bytes));
+        let mut error = check_status(http_status, retry_after).expect_err("an error status");
+        if let Some(reason) = reason {
+            error.message = format!("{} ({reason})", error.message);
+        }
+        return Err(error);
+    }
+    if !check_status(http_status, retry_after)? {
         return Ok(None);
     }
     let bytes = response
@@ -108,6 +188,14 @@ pub(super) async fn fetch(
         return Ok(None);
     }
     parse(envelope.body, track_id).map(Some)
+}
+
+/// The short machine-readable `error` code of a provider error body, if it looks like one.
+fn error_code(bytes: &[u8]) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let code = body.get("Body")?.get("error")?.as_str()?;
+    (code.len() <= 40 && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then(|| code.to_owned())
 }
 
 fn check_status(status: u16, retry_after: Option<u64>) -> Result<bool, AppError> {

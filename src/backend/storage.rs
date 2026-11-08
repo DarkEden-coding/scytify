@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// Lyrics rarely change, so found lyrics are kept for a long time. Songs the provider has none
+/// for are rechecked weekly, not daily, so filtering a long list does not ask again each day.
+const LYRICS_TTL: i64 = 90 * 86400;
+const MISSING_LYRICS_TTL: i64 = 7 * 86400;
+
 /// Durable non-secret backend storage. Authentication material is never accepted here.
 pub(crate) struct Storage {
     root: PathBuf,
@@ -216,7 +221,7 @@ impl Storage {
         lyrics: &Option<Lyrics>,
         timestamp: i64,
     ) -> Result<(), String> {
-        let ttl = if lyrics.is_some() { 30 * 86400 } else { 86400 };
+        let ttl = if lyrics.is_some() { LYRICS_TTL } else { MISSING_LYRICS_TTL };
         let body = serde_json::to_vec(lyrics).map_err(|e| e.to_string())?;
         self.db.execute("INSERT INTO lyrics_cache(track_id,body,stored_at,expires_at) VALUES(?1,?2,?3,?4) ON CONFLICT(track_id) DO UPDATE SET body=excluded.body,stored_at=excluded.stored_at,expires_at=excluded.expires_at",
             params![track_id.0, body, timestamp, timestamp.saturating_add(ttl)]).map(|_| ()).map_err(|e| e.to_string())
@@ -782,13 +787,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .cached_lyrics_at(&track_id, timestamp + 30 * 86400 - 1)
+                .cached_lyrics_at(&track_id, timestamp + LYRICS_TTL - 1)
                 .unwrap(),
             Some(lyrics.clone())
         );
         assert_eq!(
             store
-                .cached_lyrics_at(&track_id, timestamp + 30 * 86400)
+                .cached_lyrics_at(&track_id, timestamp + LYRICS_TTL)
                 .unwrap(),
             None
         );
@@ -803,13 +808,13 @@ mod tests {
         store.cache_lyrics_at(&track_id, &None, timestamp).unwrap();
         assert_eq!(
             store
-                .cached_lyrics_at(&track_id, timestamp + 86400 - 1)
+                .cached_lyrics_at(&track_id, timestamp + MISSING_LYRICS_TTL - 1)
                 .unwrap(),
             Some(None)
         );
         assert_eq!(
             store
-                .cached_lyrics_at(&track_id, timestamp + 86400)
+                .cached_lyrics_at(&track_id, timestamp + MISSING_LYRICS_TTL)
                 .unwrap(),
             None
         );

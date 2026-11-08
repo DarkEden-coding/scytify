@@ -2,10 +2,13 @@
 //! provider, so while the filter is on the loaded songs are checked a few at a time and a
 //! song appears once it is known to have lyrics. The backend caches every answer on disk.
 use super::*;
+use std::time::Instant;
 
 /// Lyrics lookups in flight at once. The backend refuses new work beyond four jobs, and the
 /// lyrics panel needs one of them.
 const MAX_PROBES: usize = 2;
+/// Longest pause the filter takes after a failure that resolves itself.
+const MAX_PAUSE: Duration = Duration::from_secs(600);
 
 #[derive(Default)]
 pub(super) struct LyricsFilter {
@@ -17,6 +20,8 @@ pub(super) struct LyricsFilter {
     cursor: usize,
     /// Why checking stopped; toggling the filter again retries.
     pub(super) error: Option<String>,
+    /// Checking is paused until then after a rate limit, busy backend or dropped connection.
+    pub(super) retry_at: Option<Instant>,
 }
 
 impl LyricsFilter {
@@ -33,6 +38,7 @@ impl LyricsFilter {
     pub(super) fn set_only(&mut self, only: bool) {
         self.only = only;
         self.error = None;
+        self.retry_at = None;
         self.cursor = 0;
     }
 
@@ -45,6 +51,15 @@ impl LyricsFilter {
 
     /// Record the outcome of a lookup. False when `id` was not one of this filter's.
     pub(super) fn finish(&mut self, id: RequestId, result: &Result<Response, AppError>) -> bool {
+        self.finish_at(id, result, Instant::now())
+    }
+
+    fn finish_at(
+        &mut self,
+        id: RequestId,
+        result: &Result<Response, AppError>,
+        now: Instant,
+    ) -> bool {
         let Some(track) = self.probes.remove(&id) else {
             return false;
         };
@@ -56,10 +71,31 @@ impl LyricsFilter {
             Err(e) if e.kind == ErrorKind::InvalidInput => {
                 self.known.insert(track, false);
             }
+            // Passing trouble: wait it out, then check this song again.
+            Err(e) if passing(e.kind) => {
+                let default = if e.kind == ErrorKind::RateLimited { 60 } else { 5 };
+                let wait = Duration::from_secs(e.retry_after_seconds.unwrap_or(default));
+                let until = now + wait.min(MAX_PAUSE);
+                self.retry_at = Some(self.retry_at.map_or(until, |at| at.max(until)));
+                self.cursor = 0;
+            }
+            // Needs the user, such as a rejected key.
             Err(e) => self.error = Some(e.message.clone()),
             Ok(_) => {}
         }
         true
+    }
+
+    /// Whether checking is paused at `now`; a pause that has run out is cleared.
+    fn paused(&mut self, now: Instant) -> bool {
+        match self.retry_at {
+            Some(at) if at > now => true,
+            Some(_) => {
+                self.retry_at = None;
+                false
+            }
+            None => false,
+        }
     }
 
     /// Songs of `items` not yet checked.
@@ -85,6 +121,9 @@ impl Ui {
     pub(super) fn probe_lyrics(&mut self) {
         let filter = &self.lyrics_filter;
         if !filter.only || filter.error.is_some() || !self.state.lyrics_key_set {
+            return;
+        }
+        if self.lyrics_filter.paused(Instant::now()) {
             return;
         }
         while self.lyrics_filter.probes.len() < MAX_PROBES {
@@ -142,6 +181,12 @@ impl Ui {
                 "Lyrics check stopped: {error} Turn the filter off and on to retry"
             ));
         }
+        if let Some(at) = filter.retry_at {
+            let secs = at.saturating_duration_since(Instant::now()).as_secs() + 1;
+            return Some(format!(
+                "Lyrics lookups paused by the provider; resuming in {secs}s"
+            ));
+        }
         let left: usize = filter.unchecked(self.filterable_tracks());
         (left > 0).then(|| format!("Checking lyrics, {left} songs left"))
     }
@@ -162,6 +207,36 @@ mod tests {
                 maker: None,
             },
         })))
+    }
+
+    #[test]
+    fn passing_failures_pause_and_recheck_but_a_rejected_key_stops() {
+        let mut filter = LyricsFilter::default();
+        filter.set_only(true);
+        filter.cursor = 5;
+        let now = Instant::now();
+        let failure = |kind, retry_after_seconds| {
+            Err(AppError {
+                kind,
+                message: "m".into(),
+                retry_after_seconds,
+            })
+        };
+        filter.probes.insert(RequestId(1), SpotifyId("a".into()));
+        assert!(filter.finish_at(RequestId(1), &failure(ErrorKind::RateLimited, Some(30)), now));
+        assert_eq!(filter.cursor, 0, "the song is checked again");
+        assert!(filter.error.is_none());
+        assert!(filter.paused(now + Duration::from_secs(29)));
+        assert!(!filter.paused(now + Duration::from_secs(30)));
+        assert!(filter.retry_at.is_none());
+
+        filter.probes.insert(RequestId(2), SpotifyId("a".into()));
+        filter.finish_at(RequestId(2), &failure(ErrorKind::Unavailable, None), now);
+        assert!(filter.paused(now + Duration::from_secs(4)), "short default pause");
+
+        filter.probes.insert(RequestId(3), SpotifyId("a".into()));
+        filter.finish_at(RequestId(3), &failure(ErrorKind::Authentication, None), now);
+        assert!(filter.error.is_some());
     }
 
     #[test]
