@@ -601,9 +601,14 @@ impl Ui {
     /// Account prerequisites shown instead of library content until sign-in completes.
     fn onboarding(&self) -> Element<'_> {
         let p: &Palette = &self.palette;
+        if matches!(
+            self.state.auth,
+            AuthState::Retrying { .. } | AuthState::Blocked { .. }
+        ) {
+            return self.sign_in_problem();
+        }
         let status: String = match &self.state.auth {
             AuthState::Authorizing => "Complete authorization in your browser".into(),
-            AuthState::Blocked { reason } => reason.clone(),
             _ => "Connect your Spotify account".into(),
         };
         container(
@@ -624,6 +629,45 @@ impl Ui {
                     self.control(self.label("Account setup")).on_press(Message::Settings),
                     self.control(self.label("Cancel"))
                         .on_press(Message::Action(Action::CancelLogin)),
+                ]
+                .spacing(p.shape.spacing)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(p.shape.spacing * 2.0)
+            .max_width(640),
+        )
+        .padding(CONTENT_PADDING * 2.0)
+        .into()
+    }
+
+    /// Saved sign-in that could not be checked (offline, Spotify down, locked keychain):
+    /// the reason and a retry, with signing in again as the fallback.
+    fn sign_in_problem(&self) -> Element<'_> {
+        let p: &Palette = &self.palette;
+        let (title, reason, hint): (&str, &str, &str) = match &self.state.auth {
+            AuthState::Retrying { reason } => (
+                "Couldn't reach Spotify",
+                reason,
+                "Your sign-in is saved. Scytify tries again every 30 seconds.",
+            ),
+            AuthState::Blocked { reason } => (
+                "Couldn't read your saved sign-in",
+                reason,
+                "Unlock or allow access to the system keychain, then retry.",
+            ),
+            _ => return space().into(),
+        };
+        container(
+            column![
+                text(title).font(p.bold_font()).size(p.font_size.display),
+                self.label(reason.to_owned()).color(p.colors.text_subdued),
+                self.subdued(hint),
+                row![
+                    self.primary("Retry", Message::Action(Action::RetryLogin)),
+                    self.control(self.label("Sign in again"))
+                        .on_press(Message::Authorize),
+                    self.control(self.label("Account setup"))
+                        .on_press(Message::Settings),
                 ]
                 .spacing(p.shape.spacing)
                 .align_y(Alignment::Center),

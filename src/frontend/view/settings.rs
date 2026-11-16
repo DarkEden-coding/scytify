@@ -56,28 +56,39 @@ impl Ui {
         let p: &Palette = &self.palette;
         let account: String = match &self.state.auth {
             AuthState::Ready { user_id } => format!("Signed in as {user_id}"),
-            AuthState::Restoring => "Signing in…".into(),
+            AuthState::Restoring => "Checking your saved sign-in…".into(),
+            AuthState::Retrying { reason } => {
+                format!("Couldn't reach Spotify: {reason}. Retrying every 30 seconds.")
+            }
             AuthState::Authorizing => "Waiting for authorization in your browser".into(),
             AuthState::Blocked { reason } => reason.clone(),
             AuthState::NeedsClientId => "Add a Client ID below to connect".into(),
             AuthState::SignedOut => "Not signed in".into(),
         };
-        let account_actions: Element<'_> = if matches!(self.state.auth, AuthState::Ready { .. }) {
-            column![
+        let account_actions: Element<'_> = match self.state.auth {
+            AuthState::Ready { .. } => column![
                 self.playback_authorization(),
                 self.control(self.icon_label(Icon::LogOut, "Sign out"))
                     .on_press(Message::Action(Action::Logout)),
             ]
             .spacing(p.shape.spacing * 1.5)
-            .into()
-        } else {
-            row![
+            .into(),
+            // Still loading: offering to sign in would suggest the account is gone.
+            AuthState::Restoring if !self.disconnected => space().into(),
+            AuthState::Retrying { .. } | AuthState::Blocked { .. } => row![
+                self.primary("Retry", Message::Action(Action::RetryLogin)),
+                self.control(self.label("Sign in again"))
+                    .on_press(Message::Authorize),
+            ]
+            .spacing(p.shape.spacing)
+            .into(),
+            _ => row![
                 self.primary("Authorize in browser", Message::Authorize),
                 self.control(self.label("Cancel"))
                     .on_press(Message::Action(Action::CancelLogin)),
             ]
             .spacing(p.shape.spacing)
-            .into()
+            .into(),
         };
         let used: String = format!(
             "{:.1} MB used of {:.0} MB",

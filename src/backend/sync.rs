@@ -1,7 +1,7 @@
-//! Listening stats shared between this user's devices over Tailscale.
+//! Listening stats and cached lyrics shared between this user's devices over Tailscale.
 //!
 //! Every linked device listens on its Tailscale address and, once a minute, asks each
-//! other device for listens and history that changed since the last time. Devices also
+//! other device for listens, history and cached lyrics that changed since the last time. Devices also
 //! pass on what they received from others and the devices they know, so a group of any
 //! size stays in step as long as it stays connected. Tailscale encrypts and limits who can
 //! connect; a group key shared through the link code keeps out other devices on the
@@ -488,8 +488,8 @@ mod tests {
         assert!(parse_code(key).is_err());
     }
 
-    /// Two devices with the same key exchange listens over a socket and learn of each
-    /// other; a wrong key is refused.
+    /// Two devices with the same key exchange listens and cached lyrics over a socket and
+    /// learn of each other; a wrong key is refused.
     #[tokio::test]
     async fn devices_exchange_listening_over_a_socket() {
         let dir = |name: &str| {
@@ -511,6 +511,22 @@ mod tests {
         }))
         .unwrap();
         a.store().save_listen(None, &track, 1, 5_000, true).unwrap();
+        let lyrics = Some(Lyrics {
+            track_id: track.id.clone(),
+            sync: LyricsSync::Static,
+            lines: Vec::new(),
+            credit: LyricsCredit {
+                source: LyricsSource::Spotify,
+                uploader: None,
+                maker: None,
+            },
+        });
+        a.store().cache_lyrics(&track.id, &lyrics).unwrap();
+        // More songs without lyrics than one message carries.
+        let missing: Vec<SpotifyId> = (0..60).map(|n| SpotifyId(format!("{n:0>22}"))).collect();
+        for id in &missing {
+            a.store().cache_lyrics(id, &None).unwrap();
+        }
         let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = socket.local_addr().unwrap().to_string();
         let server = a.clone();
@@ -528,6 +544,10 @@ mod tests {
             (a_id.as_str(), address.as_str())
         );
         assert_eq!(b.store().listen_totals(i64::MIN).unwrap()[0].1, 5_000);
+        assert_eq!(b.store().cached_lyrics(&track.id).unwrap(), Some(lyrics));
+        for id in &missing {
+            assert_eq!(b.store().cached_lyrics(id).unwrap(), Some(None));
+        }
         // a now knows b, at b's address as a saw it.
         assert_eq!(a.store().sync_peers().unwrap().len(), 1);
         *b.key.lock().unwrap() = Some("other".into());

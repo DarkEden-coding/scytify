@@ -350,8 +350,13 @@ and source/uploader/maker attribution. Provider errors use the common error
 kinds; 429 and 503 retain Retry-After seconds. Lyrics jobs share the four-job
 budget and support CancelRequest.
 
-SQLite caches successful lyrics for 30 days and missing lyrics for one day.
-Expired entries are discarded on startup, lookup, and the periodic actor tick.
+SQLite caches successful lyrics for 90 days and missing lyrics for seven days;
+a cached answer is served without a provider request. Expired entries are
+discarded on startup, lookup, and the periodic actor tick. Listening sync also
+carries cached lookups, found and missing, up to 50 per message, so a linked
+device serves them from its own cache. A received entry keeps its original
+lookup time, so it expires as it would have on the device that fetched it, and
+it replaces only an older entry. Peers from before lyrics sync ignore the field.
 ClearCache removes lyrics along with artwork and audio. Tests use a shortened
 local syllable payload and synthetic data; live API access and real key storage
 have not been tested.

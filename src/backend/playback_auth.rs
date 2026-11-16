@@ -132,7 +132,7 @@ pub(super) async fn connect(
         let old = record.tokens.clone().expect("selected OAuth tokens");
         // Refresh after a stored-credential failure even if the old token looks fresh.
         let refreshed = if auth::expiring(&old) || last_error.is_some() {
-            auth::refresh(CLIENT_ID, &old).await
+            auth::refresh(CLIENT_ID, &old).await.map_err(|e| e.message)
         } else {
             Ok(old)
         };

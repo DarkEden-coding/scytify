@@ -135,6 +135,11 @@ pub enum AuthState {
     Blocked {
         reason: String,
     },
+    /// Saved credentials could not be checked, for example while offline. They are kept;
+    /// the backend tries again every 30 seconds and on `Action::RetryLogin`.
+    Retrying {
+        reason: String,
+    },
 }
 
 /// Playback consent is separate from the user's developer Web API authorization.

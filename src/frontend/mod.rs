@@ -97,6 +97,8 @@ enum Message {
     CloseTrackMenu,
     /// Open the "Save in" sheet of a song, closing its action sheet.
     SaveSheet(Box<Track>),
+    /// Like a song and open its "Save in" sheet to add it to playlists too.
+    LikeAndSave(Box<Track>),
     CloseSaveSheet,
     /// Add a song to a playlist, or remove it if it is there: (playlist, song).
     ToggleInPlaylist(SpotifyId, SpotifyId),
@@ -657,8 +659,9 @@ impl Ui {
             return;
         }
         let wanted: Option<paging::Fill> = paging::wanted_fill(data, self.visible_slots(data));
+        // An append ("Load more") still continues the run when the window needs nothing.
         if let Some((_, sent)) = &self.more_pending
-            && wanted.is_some_and(|w| sent.serves(&w))
+            && wanted.map_or(sent.kind == paging::FillKind::Append, |w| sent.serves(&w))
         {
             return;
         }
@@ -1062,10 +1065,19 @@ impl Ui {
     }
     /// Show a route; the page is only refetched when its query changes.
     fn go(&mut self, route: Route) {
+        // Text typed before this navigation no longer opens its search when the debounce ends.
+        self.search_generation = self.search_generation.wrapping_add(1);
         if route.settings && !self.settings {
             self.open_settings();
         }
-        let changed: bool = route.query != self.query;
+        // Home's playlist shelf shows the first playlists, but the full grid may have
+        // replaced its run with one further down.
+        let changed: bool = route.query != self.query
+            || (route.home
+                && self
+                    .data
+                    .as_ref()
+                    .is_some_and(|data| paging::first_offset(data) > 0));
         if route.settings != self.settings || route.home != self.home {
             self.scroll = 0.0;
             self.reset_scroll = true;
@@ -1617,6 +1629,11 @@ impl Ui {
             Message::CloseTrackMenu => self.track_menu = None,
             Message::SaveSheet(track) => {
                 self.track_menu = None;
+                self.save_sheet = Some(track);
+            }
+            Message::LikeAndSave(track) => {
+                self.track_menu = None;
+                self.toggle_saved(library::Entry::Track((*track).clone()));
                 self.save_sheet = Some(track);
             }
             Message::CloseSaveSheet => self.save_sheet = None,
@@ -3138,6 +3155,54 @@ mod browsing_tests {
         let _ = ui.update(Message::Scroll(0.0, 700.0));
         let (_, offset) = fetch(&mut back);
         assert_eq!(offset, 0);
+    }
+    /// Regression: scrolling inside the loaded run while "Load more" loads keeps its request.
+    #[test]
+    fn load_more_survives_scrolling_inside_the_run() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        ui.home = false;
+        ui.fetch();
+        let first: Command = back.commands.try_recv().unwrap();
+        complete(&mut ui, first.id, artists(0, 100, true));
+        assert!(back.commands.try_recv().is_err());
+        let _ = ui.update(Message::TrackMore);
+        let more: Command = back.commands.try_recv().unwrap();
+        let _ = ui.update(Message::Scroll(10.0, 700.0));
+        assert!(
+            back.commands.try_recv().is_err(),
+            "the request was cancelled"
+        );
+        complete(&mut ui, more.id, artists(100, 100, false));
+        assert_eq!(ui.data.as_ref().map(|d| paging::page_info(d).0), Some(200));
+    }
+    /// Regression: Home's playlist shelf is reloaded from the start after the full grid
+    /// replaced its run with one further down.
+    #[test]
+    fn home_reloads_the_first_playlists_after_the_grid_jumped() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        let run = |offset: u64| {
+            Some(PageData::Playlists(Page {
+                offset,
+                total: Some(5_000),
+                items: vec![],
+                has_more: true,
+                next_offset: offset + 100,
+            }))
+        };
+        ui.data = run(0);
+        let grid = Route::browse(Query::OwnPlaylists, "Your playlists", None);
+        let _ = ui.update(Message::Navigate(grid));
+        assert!(back.commands.try_recv().is_err());
+        ui.data = run(3_000);
+        let _ = ui.update(Message::Back);
+        assert!(ui.home);
+        assert!(matches!(
+            back.commands.try_recv().unwrap().action,
+            Action::Fetch {
+                query: Query::OwnPlaylists,
+                page: PageRequest { offset: 0, .. }
+            }
+        ));
     }
     /// Back and Forward restore routes; refining a search does not add history entries.
     #[test]

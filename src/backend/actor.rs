@@ -13,9 +13,15 @@ pub(super) enum Job {
         u64,
         Result<(auth::Tokens, String, playback_auth::Setup), AppError>,
     ),
-    Bootstrap(u64, BootstrapResult),
+    /// The tokens are the saved ones, or their refreshed replacement even when the check
+    /// after the refresh failed.
+    Bootstrap(u64, auth::Tokens, BootstrapResult),
     PlaybackAuthorization(RequestId, u64, playback_auth::Setup),
-    Refresh(u64, Result<(auth::Tokens, String), AppError>),
+    /// Refreshed tokens, kept even when the identity check after them fails.
+    Refresh(
+        u64,
+        Result<(auth::Tokens, Result<String, AppError>), AppError>,
+    ),
     Response(RequestId, Result<Response, AppError>),
     Artwork(RequestId, String, Result<Vec<u8>, AppError>),
     Lyrics(RequestId, SpotifyId, Result<Option<Lyrics>, AppError>),
@@ -82,7 +88,12 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
         None => Queue::empty(rand::random()),
     };
     let api = api::Api::new()?;
-    let mut tokens = auth::Vault::load().map_err(|e| safe(ErrorKind::CredentialStore, &e))?;
+    // An unreadable credential store (locked or denied keychain) blocks sign-in until the
+    // user retries, instead of stopping the backend.
+    let (mut tokens, vault_error) = match auth::Vault::load() {
+        Ok(tokens) => (tokens, None),
+        Err(e) => (None, Some(e)),
+    };
     let mut lyrics = lyrics::Client::new(lyrics::Client::load_key()?)?;
     let mut state = super::initial_state();
     state.lyrics_key_set = lyrics.has_key();
@@ -104,6 +115,8 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     };
     state.auth = if settings.client_id.is_none() {
         AuthState::NeedsClientId
+    } else if let Some(reason) = vault_error {
+        AuthState::Blocked { reason }
     } else if tokens.is_some() {
         AuthState::Restoring
     } else {
@@ -122,15 +135,8 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
     let mut metadata: HashMap<SpotifyId, Track> = HashMap::new();
     let mut metadata_requested_for: Option<u64> = None;
     let mut auth_epoch = 0_u64;
-    let mut background_auth: Option<tokio::task::AbortHandle> = None;
-    if let (Some(t), Some(cid)) = (tokens.clone(), settings.client_id.clone()) {
-        let a = api.clone();
-        let current = q.snapshot.current.as_ref().map(|e| e.track_id.clone());
-        background_auth =
-            Some(jobs.spawn(async move {
-                Job::Bootstrap(0, bootstrap_ready(a, cid, t, current).await)
-            }));
-    }
+    let mut background_auth: Option<tokio::task::AbortHandle> =
+        spawn_bootstrap(&api, auth_epoch, &tokens, &state, &q, &mut jobs);
     let mut last_position_checkpoint = std::time::Instant::now();
     let mut refresh_tick = tokio::time::interval(std::time::Duration::from_secs(30));
     refresh_tick.tick().await;
@@ -192,10 +198,13 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                     if *visible { polling.next = std::time::Instant::now(); }
                 }
                 let invalidates_auth = matches!(&command.action, Action::Logout | Action::BeginLogin)
-                    || matches!(&command.action, Action::Configure(settings) if settings.client_id != state.settings.client_id);
+                    || matches!(&command.action, Action::Configure(settings)
+                        if settings.client_id != state.settings.client_id && storage::valid_settings(settings));
                 if invalidates_auth {
                     auth_epoch = auth_epoch.wrapping_add(1);
                     jobs.abort_all();
+                    // An aborted lookup of the current song's details must run again.
+                    metadata_requested_for = None;
                     for (request, handle) in handles.drain() {
                         handle.abort();
                         emit(&port.events, Event::Completed { id: request, result: Err(safe(ErrorKind::Authentication, "account changed; retry the request")) });
@@ -221,6 +230,8 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                 let result = if let Action::Sync(action) = command.action {
                     Some(sync_actions.try_send(action).map(|()| Response::Accepted)
                         .map_err(|_| safe(ErrorKind::Unavailable, "sync is busy; try again")))
+                } else if matches!(command.action, Action::RetryLogin) {
+                    Some(retry_login(&api, auth_epoch, &mut tokens, &mut state, &q, &mut jobs, &mut background_auth))
                 } else if matches!(command.action, Action::PlayDiscover) {
                     start_discover(id, auth_epoch, &discovery, &api, &store, &state, &tokens, &player, &mut jobs, &mut handles)
                 } else {
@@ -309,7 +320,11 @@ pub(super) async fn run(mut port: BackendPort) -> Result<(), AppError> {
                 if let Err(error) = store.prune_lyrics(storage::now()) {
                     emit(&port.events, Event::Notice(safe(ErrorKind::Internal, &error)));
                 }
-                if background_auth.is_none() && jobs.len() < 4 && api.identity_wait().is_none()
+                if background_auth.is_none() && jobs.len() < 4 && matches!(state.auth, AuthState::Retrying { .. }) {
+                    background_auth = spawn_bootstrap(&api, auth_epoch, &tokens, &state, &q, &mut jobs);
+                    let _ = port.state.send(state.clone());
+                } else if background_auth.is_none() && jobs.len() < 4 && api.identity_wait().is_none()
+                    && matches!(state.auth, AuthState::Ready { .. })
                     && let (Some(t), Some(cid)) = (tokens.clone().filter(auth::expiring), state.settings.client_id.clone()) {
                         let a=api.clone(); let epoch=auth_epoch;
                         background_auth = Some(jobs.spawn(async move{Job::Refresh(epoch, refresh_ready(a,cid,t).await)}));
@@ -937,6 +952,21 @@ fn finish_job(
                 );
                 return;
             }
+            // A quick second Play started its own connection; the first one already plays
+            // the current song, so keep it instead of restarting on the newer session.
+            if player.is_some() {
+                if let Ok(extra) = r.playback {
+                    extra.stop();
+                }
+                emit(
+                    events,
+                    Event::Completed {
+                        id,
+                        result: Ok(Response::Accepted),
+                    },
+                );
+                return;
+            }
             match install_playback(r, state, events) {
                 Ok(mut p) => {
                     install_connect_state(&p, state, events);
@@ -988,9 +1018,28 @@ fn finish_job(
             }
             apply_login(r, Some(id), events, state, tokens, player, player_events, q)
         }
-        Job::Bootstrap(epoch, r) => {
+        Job::Bootstrap(epoch, checked, r) => {
             if epoch == auth_epoch {
                 match r {
+                    // Offline, rate limited or Spotify unavailable: keep the saved sign-in,
+                    // including tokens refreshed before the failure.
+                    Err(e) if !needs_new_sign_in(e.kind) => {
+                        let rotated = tokens
+                            .as_ref()
+                            .is_none_or(|old| old.access_token != checked.access_token);
+                        if rotated {
+                            match auth::Vault::store(&checked) {
+                                Ok(()) => *tokens = Some(checked),
+                                Err(e) => emit(
+                                    events,
+                                    Event::Notice(safe(ErrorKind::CredentialStore, &e)),
+                                ),
+                            }
+                        }
+                        state.auth = AuthState::Retrying {
+                            reason: retry_reason(&e),
+                        };
+                    }
                     Err(e) => apply_login(
                         Err(e),
                         None,
@@ -1032,12 +1081,21 @@ fn finish_job(
                 return;
             }
             match r {
-                Err(e) => emit(events, Event::Notice(e)),
-                Ok((t, uid)) => match auth::Vault::store(&t) {
+                Err(e) => {
+                    // Spotify revoked the sign-in; requests would only keep failing.
+                    if e.kind == ErrorKind::Authentication {
+                        state.auth = AuthState::SignedOut;
+                    }
+                    emit(events, Event::Notice(e))
+                }
+                Ok((t, identity)) => match auth::Vault::store(&t) {
                     Err(e) => emit(events, Event::Notice(safe(ErrorKind::CredentialStore, &e))),
                     Ok(()) => {
                         *tokens = Some(t);
-                        state.auth = AuthState::Ready { user_id: uid };
+                        match identity {
+                            Ok(uid) => state.auth = AuthState::Ready { user_id: uid },
+                            Err(e) => emit(events, Event::Notice(e)),
+                        }
                     }
                 },
             }
@@ -1279,6 +1337,23 @@ fn apply_login(
 async fn bootstrap_ready(
     api: api::Api,
     client_id: String,
+    mut t: auth::Tokens,
+    current: Option<SpotifyId>,
+) -> (auth::Tokens, BootstrapResult) {
+    // Refresh here so a rotated refresh token survives a failed identity check.
+    if auth::expiring(&t) {
+        match auth::refresh(&client_id, &t).await {
+            Ok(refreshed) => t = refreshed,
+            Err(e) => return (t, Err(refresh_error(e))),
+        }
+    }
+    let result = bootstrap_check(api, client_id, t.clone(), current).await;
+    (t, result)
+}
+
+async fn bootstrap_check(
+    api: api::Api,
+    client_id: String,
     t: auth::Tokens,
     current: Option<SpotifyId>,
 ) -> BootstrapResult {
@@ -1293,6 +1368,93 @@ async fn bootstrap_ready(
     Ok((t, uid, player, tracks))
 }
 
+/// Checks saved credentials in the background, as at startup. `None` without credentials
+/// or a Client ID.
+fn spawn_bootstrap(
+    api: &api::Api,
+    epoch: u64,
+    tokens: &Option<auth::Tokens>,
+    state: &AppState,
+    q: &Queue,
+    jobs: &mut JoinSet<Job>,
+) -> Option<tokio::task::AbortHandle> {
+    let (Some(t), Some(cid)) = (tokens.clone(), state.settings.client_id.clone()) else {
+        return None;
+    };
+    let api = api.clone();
+    let current = q.snapshot.current.as_ref().map(|e| e.track_id.clone());
+    Some(jobs.spawn(async move {
+        let (t, result) = bootstrap_ready(api, cid, t, current).await;
+        Job::Bootstrap(epoch, t, result)
+    }))
+}
+
+/// Answers `Action::RetryLogin`: checks saved credentials again now, rereading them first
+/// when the credential store could not be read.
+fn retry_login(
+    api: &api::Api,
+    epoch: u64,
+    tokens: &mut Option<auth::Tokens>,
+    state: &mut AppState,
+    q: &Queue,
+    jobs: &mut JoinSet<Job>,
+    background_auth: &mut Option<tokio::task::AbortHandle>,
+) -> Result<Response, AppError> {
+    match &state.auth {
+        AuthState::Retrying { .. } => {}
+        AuthState::Blocked { .. } => match auth::Vault::load() {
+            Ok(loaded) => *tokens = loaded,
+            Err(reason) => {
+                state.auth = AuthState::Blocked {
+                    reason: reason.clone(),
+                };
+                return Err(safe(ErrorKind::CredentialStore, &reason));
+            }
+        },
+        _ => return Ok(Response::Accepted),
+    }
+    if let Some(h) = background_auth.take() {
+        h.abort();
+    }
+    *background_auth = spawn_bootstrap(api, epoch, tokens, state, q, jobs);
+    state.auth = if background_auth.is_some() {
+        AuthState::Restoring
+    } else if state.settings.client_id.is_some() {
+        AuthState::SignedOut
+    } else {
+        AuthState::NeedsClientId
+    };
+    Ok(Response::Accepted)
+}
+
+/// Whether a failed sign-in check means the saved authorization is no longer usable.
+fn needs_new_sign_in(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Authentication | ErrorKind::Permission | ErrorKind::CredentialStore
+    )
+}
+
+/// What the account screen says while a saved sign-in waits to be checked again.
+fn retry_reason(e: &AppError) -> String {
+    match e.retry_after_seconds {
+        Some(seconds) if e.kind == ErrorKind::RateLimited => {
+            format!("{}; Spotify asked to wait {seconds}s", e.message)
+        }
+        _ => e.message.clone(),
+    }
+}
+
+/// A rejected refresh needs a new sign-in; anything else may pass on a later attempt.
+fn refresh_error(e: auth::RefreshError) -> AppError {
+    let kind = if e.rejected {
+        ErrorKind::Authentication
+    } else {
+        ErrorKind::Network
+    };
+    safe(kind, &e.message)
+}
+
 /// Refreshes credentials, verifies identity, and independently attempts audio connection.
 pub(super) async fn login_ready(
     api: api::Api,
@@ -1300,9 +1462,7 @@ pub(super) async fn login_ready(
     mut t: auth::Tokens,
 ) -> Result<(auth::Tokens, String, playback_auth::Setup), AppError> {
     if auth::expiring(&t) {
-        t = auth::refresh(&client_id, &t)
-            .await
-            .map_err(|e| safe(ErrorKind::Authentication, &e))?;
+        t = auth::refresh(&client_id, &t).await.map_err(refresh_error)?;
     }
     let identity = api.identity(&t.access_token).await?;
     let p = playback_auth::connect(client_id, identity.clone(), 1.0, false).await;
@@ -1310,17 +1470,17 @@ pub(super) async fn login_ready(
 }
 
 /// Refreshes and verifies credentials without replacing a live decoder/output session.
+/// Spotify may rotate the refresh token, so new tokens are returned even when the
+/// identity check fails; dropping them would leave only the replaced refresh token.
 async fn refresh_ready(
     api: api::Api,
     client_id: String,
     mut t: auth::Tokens,
-) -> Result<(auth::Tokens, String), AppError> {
+) -> Result<(auth::Tokens, Result<String, AppError>), AppError> {
     if auth::expiring(&t) {
-        t = auth::refresh(&client_id, &t)
-            .await
-            .map_err(|e| safe(ErrorKind::Authentication, &e))?;
+        t = auth::refresh(&client_id, &t).await.map_err(refresh_error)?;
     }
-    let identity = api.identity(&t.access_token).await?;
+    let identity = api.identity(&t.access_token).await;
     Ok((t, identity))
 }
 
@@ -1988,6 +2148,55 @@ mod regression_tests {
         ));
         assert!(matches!(rx.recv().await, Some(Event::QuitReady)));
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_sign_in_failures_keep_credentials_and_retry() {
+        assert!(!needs_new_sign_in(ErrorKind::Network));
+        assert!(!needs_new_sign_in(ErrorKind::RateLimited));
+        assert!(needs_new_sign_in(ErrorKind::Authentication));
+
+        let api = api::Api::new().unwrap();
+        let mut state = super::super::initial_state();
+        state.settings.client_id = Some("client".into());
+        state.auth = AuthState::Retrying {
+            reason: "offline".into(),
+        };
+        let mut tokens = Some(auth::Tokens {
+            access_token: "a".into(),
+            refresh_token: Some("r".into()),
+            expires_at: u64::MAX,
+        });
+        let (q, mut jobs, mut background) = (Queue::empty(1), JoinSet::new(), None);
+        let result = retry_login(
+            &api,
+            0,
+            &mut tokens,
+            &mut state,
+            &q,
+            &mut jobs,
+            &mut background,
+        );
+        assert!(result.is_ok());
+        assert!(matches!(state.auth, AuthState::Restoring));
+        assert!(background.is_some() && tokens.is_some());
+        jobs.abort_all();
+
+        // Nothing to retry once signed in.
+        state.auth = AuthState::Ready {
+            user_id: "me".into(),
+        };
+        background = None;
+        let result = retry_login(
+            &api,
+            0,
+            &mut tokens,
+            &mut state,
+            &q,
+            &mut jobs,
+            &mut background,
+        );
+        assert!(result.is_ok() && background.is_none());
     }
 
     #[test]

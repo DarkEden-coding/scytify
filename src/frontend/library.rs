@@ -316,7 +316,9 @@ impl Ui {
                     } else {
                         remove_track(page, &track.id);
                     }
+                    // Rows shifted, so remembered row indexes point at other songs.
                     self.selected_row = None;
+                    self.hovered_row = None;
                 }
             }
             Entry::Album(album) => {
@@ -563,5 +565,17 @@ mod tests {
         let ids: Vec<&str> = page.items.iter().map(|p| p.id.0.as_str()).collect();
         assert_eq!(ids, ["mix", "mine"]);
         assert_eq!(page.total, Some(2));
+    }
+
+    #[test]
+    fn liking_a_song_opens_its_save_sheet() {
+        let (mut ui, mut back) = liked_songs();
+        let c = track("c", None);
+        let item = LibraryItem::Track(c.id.clone());
+        let _ = ui.update(Message::LikeAndSave(Box::new(c.clone())));
+        let like = sent(&mut back).pop().unwrap();
+        assert!(matches!(&like.action, Action::SetSaved { item: i, saved: true } if *i == item));
+        assert!(ui.is_saved(&item));
+        assert_eq!(ui.save_sheet.as_deref().map(|t| &t.id), Some(&c.id));
     }
 }

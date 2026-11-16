@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 /// for are rechecked weekly, not daily, so filtering a long list does not ask again each day.
 const LYRICS_TTL: i64 = 90 * 86400;
 const MISSING_LYRICS_TTL: i64 = 7 * 86400;
+/// Cached lyrics per sync message. A syllable-timed song can take tens of kilobytes, so
+/// this keeps a message well under the sync size limit.
+const SYNC_LYRICS: usize = 50;
 
 /// Durable non-secret backend storage. Authentication material is never accepted here.
 pub(crate) struct Storage {
@@ -27,6 +30,18 @@ pub(crate) struct SyncBatch {
     pub heard: Vec<SyncHeard>,
     /// Stored metadata (JSON) of each song in `listens`.
     pub tracks: Vec<(String, String)>,
+    /// Cached lyrics lookups. Devices from before lyrics sync neither send nor read these.
+    #[serde(default)]
+    pub lyrics: Vec<SyncLyrics>,
+}
+
+/// One cached lyrics lookup: the lyrics as JSON, or `null` when the song has none.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SyncLyrics {
+    pub track_id: String,
+    pub body: String,
+    /// When the lookup was made, which sets when it expires.
+    pub stored_at: i64,
 }
 
 /// One listen, identified by the device that made it and its row there.
@@ -221,10 +236,13 @@ impl Storage {
         lyrics: &Option<Lyrics>,
         timestamp: i64,
     ) -> Result<(), String> {
-        let ttl = if lyrics.is_some() { LYRICS_TTL } else { MISSING_LYRICS_TTL };
         let body = serde_json::to_vec(lyrics).map_err(|e| e.to_string())?;
-        self.db.execute("INSERT INTO lyrics_cache(track_id,body,stored_at,expires_at) VALUES(?1,?2,?3,?4) ON CONFLICT(track_id) DO UPDATE SET body=excluded.body,stored_at=excluded.stored_at,expires_at=excluded.expires_at",
-            params![track_id.0, body, timestamp, timestamp.saturating_add(ttl)]).map(|_| ()).map_err(|e| e.to_string())
+        let expires_at = timestamp.saturating_add(lyrics_ttl(lyrics.is_some()));
+        self.write(|db| {
+            db.execute("INSERT INTO lyrics_cache(track_id,body,stored_at,expires_at,seq) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(track_id) DO UPDATE SET body=excluded.body,stored_at=excluded.stored_at,expires_at=excluded.expires_at,seq=excluded.seq",
+                params![track_id.0, body, timestamp, expires_at, next_seq(db)?])
+        })
+        .map(|_| ())
     }
     /// Discard expired content even when those tracks are never requested again.
     pub(crate) fn prune_lyrics(&self, timestamp: i64) -> Result<(), String> {
@@ -359,9 +377,9 @@ impl Storage {
             .map_err(|e| e.to_string())?;
         Ok((today, days))
     }
-    /// Up to `limit` listens and history rows changed after change number `cursor`, leaving
-    /// out what `except` (the asking device) recorded itself. Returns the batch, the change
-    /// number to continue from, and whether more follow.
+    /// Up to `limit` listens, history rows and cached lyrics changed after change number
+    /// `cursor`, leaving out listening that `except` (the asking device) recorded itself.
+    /// Returns the batch, the change number to continue from, and whether more follow.
     pub(crate) fn sync_changes(
         &self,
         cursor: i64,
@@ -395,20 +413,38 @@ impl Storage {
                     }))
                 })?
                 .collect::<Result<_, _>>()?;
-            // Keep the `limit` earliest changes of both tables, so the cursor skips none.
+            let mut lyrics: Vec<(i64, SyncLyrics)> = self
+                .db
+                .prepare("SELECT seq,track_id,body,stored_at FROM lyrics_cache WHERE seq>?1 AND expires_at>?2 ORDER BY seq LIMIT ?3")?
+                .query_map(params![cursor, now(), SYNC_LYRICS as i64 + 1], |r| {
+                    Ok((r.get(0)?, SyncLyrics {
+                        track_id: r.get(1)?,
+                        body: String::from_utf8_lossy(&r.get::<_, Vec<u8>>(2)?).into_owned(),
+                        stored_at: r.get(3)?,
+                    }))
+                })?
+                .collect::<Result<_, _>>()?;
+            // Keep the `limit` earliest changes of all tables, so the cursor skips none.
             let mut seqs: Vec<i64> = listens
                 .iter()
                 .map(|l| l.0)
                 .chain(heard.iter().map(|h| h.0))
+                .chain(lyrics.iter().map(|l| l.0))
                 .collect();
             seqs.sort_unstable();
-            let more = seqs.len() > limit;
-            let next = seqs
+            let mut more = seqs.len() > limit;
+            let mut next = seqs
                 .get(limit.min(seqs.len()).wrapping_sub(1))
                 .copied()
                 .unwrap_or(cursor);
+            // Stop at the last lyrics sent when more are waiting.
+            if lyrics.len() > SYNC_LYRICS && lyrics[SYNC_LYRICS - 1].0 < next {
+                next = lyrics[SYNC_LYRICS - 1].0;
+                more = true;
+            }
             listens.retain(|l| l.0 <= next);
             heard.retain(|h| h.0 <= next);
+            lyrics.retain(|l| l.0 <= next);
             let mut tracks = Vec::new();
             let mut body = self
                 .db
@@ -428,16 +464,30 @@ impl Storage {
                 listens: listens.into_iter().map(|l| l.1).collect(),
                 heard: heard.into_iter().map(|h| h.1).collect(),
                 tracks,
+                lyrics: lyrics.into_iter().map(|l| l.1).collect(),
             };
             Ok((batch, next, more))
         };
         run().map_err(|e| e.to_string())
     }
-    /// Merges changes from another device. Listens only grow and history only counts up,
-    /// so a row passed on again by a third device never goes back. Returns whether anything
-    /// new was stored.
+    /// Merges changes from another device. Listens only grow, history only counts up and
+    /// lyrics only get newer, so a row passed on again by a third device never goes back.
+    /// Returns whether any new listening was stored.
     pub(crate) fn merge_sync(&self, batch: &SyncBatch) -> Result<bool, String> {
+        let timestamp = now();
         self.write(|db| {
+            for l in &batch.lyrics {
+                // Store only lookups this version can read back and that have not expired.
+                let Some(found) = readable_lyrics(l) else { continue };
+                let expires_at = l.stored_at.saturating_add(lyrics_ttl(found));
+                if l.stored_at > timestamp || expires_at <= timestamp {
+                    continue;
+                }
+                db.execute(
+                    "INSERT INTO lyrics_cache(track_id,body,stored_at,expires_at,seq) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(track_id) DO UPDATE SET body=excluded.body,stored_at=excluded.stored_at,expires_at=excluded.expires_at,seq=excluded.seq WHERE excluded.stored_at>lyrics_cache.stored_at",
+                    params![l.track_id, l.body.as_bytes(), l.stored_at, expires_at, next_seq(db)?],
+                )?;
+            }
             let mut changed = 0;
             for (id, json) in &batch.tracks {
                 // Store only metadata that this version can read back.
@@ -660,6 +710,24 @@ impl Storage {
     }
 }
 
+fn lyrics_ttl(found: bool) -> i64 {
+    if found {
+        LYRICS_TTL
+    } else {
+        MISSING_LYRICS_TTL
+    }
+}
+
+/// Whether synced lyrics belong to a valid track id and parse; `Some(found)` if so.
+fn readable_lyrics(l: &SyncLyrics) -> Option<bool> {
+    let id_ok = l.track_id.len() == 22 && l.track_id.bytes().all(|b| b.is_ascii_alphanumeric());
+    match serde_json::from_str::<Option<Lyrics>>(&l.body).ok()? {
+        Some(lyrics) if id_ok && lyrics.track_id.0 == l.track_id => Some(true),
+        None if id_ok => Some(false),
+        _ => None,
+    }
+}
+
 /// Takes the next change number. Call inside `Storage::write`.
 fn next_seq(db: &Connection) -> rusqlite::Result<i64> {
     db.query_row(
@@ -676,12 +744,13 @@ const LISTENED_MS: &str = "MIN(l.listened_ms, COALESCE(NULLIF(CASE WHEN json_val
 
 /// Adds what merging with other devices needs: the device each listen and history row
 /// comes from, its row there, and a change number that orders every write. Rows from
-/// before sync belong to this device.
+/// before sync belong to this device. Cached lyrics get change numbers too.
 fn migrate_for_sync(db: &Connection, device_id: &str) -> rusqlite::Result<()> {
-    let has_origin = |table: &str| -> rusqlite::Result<bool> {
-        db.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name='origin'")?
-            .exists([table])
+    let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
+        db.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name=?2")?
+            .exists([table, column])
     };
+    let has_origin = |table: &str| has_column(table, "origin");
     db.execute_batch("BEGIN IMMEDIATE")?;
     let migrate = || -> rusqlite::Result<()> {
         let clock = |db: &Connection| -> rusqlite::Result<i64> {
@@ -716,7 +785,16 @@ fn migrate_for_sync(db: &Connection, device_id: &str) -> rusqlite::Result<()> {
             )?;
             db.execute_batch("DROP TABLE listen_history; ALTER TABLE listen_history_merged RENAME TO listen_history;")?;
         }
-        db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS listens_origin ON listens(origin,origin_row); CREATE INDEX IF NOT EXISTS listens_seq ON listens(seq); CREATE INDEX IF NOT EXISTS listen_history_seq ON listen_history(seq);")
+        if !has_column("lyrics_cache", "seq")? {
+            let base = clock(db)?;
+            db.execute_batch("ALTER TABLE lyrics_cache ADD COLUMN seq INTEGER;")?;
+            db.execute("UPDATE lyrics_cache SET seq=rowid+?1", [base])?;
+            db.execute(
+                "INSERT INTO kv(k,v) VALUES('sync_seq',?1) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                [base + db.query_row("SELECT COALESCE(MAX(rowid),0) FROM lyrics_cache", [], |r| r.get::<_, i64>(0))?],
+            )?;
+        }
+        db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS listens_origin ON listens(origin,origin_row); CREATE INDEX IF NOT EXISTS listens_seq ON listens(seq); CREATE INDEX IF NOT EXISTS listen_history_seq ON listen_history(seq); CREATE INDEX IF NOT EXISTS lyrics_cache_seq ON lyrics_cache(seq);")
     };
     match migrate() {
         Ok(()) => db.execute_batch("COMMIT"),
@@ -753,7 +831,7 @@ pub(super) fn now() -> i64 {
         .as_secs() as i64
 }
 
-fn valid_settings(s: &Settings) -> bool {
+pub(super) fn valid_settings(s: &Settings) -> bool {
     (16 * 1024 * 1024..=100_000_000_000).contains(&s.cache_limit_bytes)
         && s.client_id
             .as_ref()

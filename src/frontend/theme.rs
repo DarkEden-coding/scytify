@@ -353,6 +353,12 @@ impl Palette {
     pub fn font(&self) -> iced::Font {
         iced::Font {
             family: match self.font_family {
+                // The text engine's generic sans-serif is Open Sans, which macOS lacks, and
+                // the system San Francisco font exposes no bold face to it, so bold text fell
+                // back to an unrelated (monospace) face. Helvetica Neue ships real weights.
+                #[cfg(target_os = "macos")]
+                FontFamily::SansSerif => iced::font::Family::Name("Helvetica Neue"),
+                #[cfg(not(target_os = "macos"))]
                 FontFamily::SansSerif => iced::font::Family::SansSerif,
                 FontFamily::Serif => iced::font::Family::Serif,
                 FontFamily::Monospace => iced::font::Family::Monospace,

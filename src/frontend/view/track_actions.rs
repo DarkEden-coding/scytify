@@ -42,15 +42,19 @@ impl Ui {
                 .push(self.subdued("Spotify reports this song as unavailable for playback."));
         }
         let liked: bool = self.is_saved(&LibraryItem::Track(track.id.clone()));
-        actions = actions.push(self.menu_item(
-            Icon::Heart,
-            if liked {
-                "Remove from Liked Songs"
-            } else {
-                "Add to Liked Songs"
-            },
-            Message::ToggleSaved(library::Entry::Track(track.clone())),
-        ));
+        actions = actions.push(if liked {
+            self.menu_item(
+                Icon::Heart,
+                "Remove from Liked Songs",
+                Message::ToggleSaved(library::Entry::Track(track.clone())),
+            )
+        } else {
+            self.menu_item(
+                Icon::Heart,
+                "Add to Liked Songs",
+                Message::LikeAndSave(Box::new(track.clone())),
+            )
+        });
         actions = actions.push(self.menu_item(
             Icon::CirclePlus,
             "Add to playlist",

@@ -272,13 +272,14 @@ impl Ui {
             (Icons::Lucide, false) => icons::icon(Icon::Heart, 16.0).into(),
             (Icons::Text, _) => self.label(if liked { "Liked" } else { "Like" }).into(),
         };
-        // Like Spotify, the first press likes the song; once liked, it opens the save sheet.
+        // The first press likes the song and opens the save sheet for playlists; once
+        // liked, a press opens the sheet alone.
         let (tip, message): (&str, Message) = if liked {
             ("Save in…", Message::SaveSheet(Box::new(track.clone())))
         } else {
             (
                 "Add to Liked Songs",
-                Message::ToggleSaved(library::Entry::Track(track.clone())),
+                Message::LikeAndSave(Box::new(track.clone())),
             )
         };
         self.tip(

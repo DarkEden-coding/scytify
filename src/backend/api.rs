@@ -78,8 +78,8 @@ impl Api {
         if let Err(e) = check_status(&r) {
             if e.kind == ErrorKind::RateLimited {
                 let wait = e.retry_after_seconds.unwrap_or(30).max(1);
-                *self.identity_backoff.lock().unwrap() = std::time::Instant::now()
-                    .checked_add(std::time::Duration::from_secs(wait));
+                *self.identity_backoff.lock().unwrap() =
+                    std::time::Instant::now().checked_add(std::time::Duration::from_secs(wait));
                 return Err(identity_rate_limited(wait));
             }
             return Err(err(
@@ -534,6 +534,11 @@ impl Api {
         }
         if matches!(q, Query::FollowedArtists) {
             return self.followed_artists(token, p).await;
+        }
+        // The overview is one bounded request whatever the page size; chunking it would
+        // send the same search once per chunk.
+        if matches!(q, Query::Search { .. }) {
+            return self.fetch_upstream(token, user_id, q, p).await;
         }
         let step = upstream_page_size(q);
         let chunks = (0..p.limit)

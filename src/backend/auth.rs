@@ -228,18 +228,42 @@ pub(crate) async fn authorize(client_id: &str) -> Result<Tokens, String> {
     })
 }
 
+/// Why a token refresh failed: Spotify `rejected` the saved authorization (sign in again),
+/// or the attempt failed for a reason worth retrying, such as the network.
+#[derive(Debug)]
+pub(crate) struct RefreshError {
+    pub rejected: bool,
+    pub message: String,
+}
+
+impl RefreshError {
+    fn rejected(message: &str) -> Self {
+        Self {
+            rejected: true,
+            message: message.into(),
+        }
+    }
+    fn temporary(message: impl Into<String>) -> Self {
+        Self {
+            rejected: false,
+            message: message.into(),
+        }
+    }
+}
+
 /// Refreshes an expiring access token with PKCE's public-client flow and retains a rotated token.
-pub(crate) async fn refresh(client_id: &str, old: &Tokens) -> Result<Tokens, String> {
+pub(crate) async fn refresh(client_id: &str, old: &Tokens) -> Result<Tokens, RefreshError> {
     let refresh = old
         .refresh_token
         .as_deref()
-        .ok_or("authorization expired; sign in again")?;
+        .ok_or_else(|| RefreshError::rejected("authorization expired; sign in again"))?;
     let body = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("client_id", client_id)
         .append_pair("grant_type", "refresh_token")
         .append_pair("refresh_token", refresh)
         .finish();
-    let r = token_client()?
+    let r = token_client()
+        .map_err(RefreshError::temporary)?
         .post("https://accounts.spotify.com/api/token")
         .header(
             reqwest::header::CONTENT_TYPE,
@@ -248,9 +272,24 @@ pub(crate) async fn refresh(client_id: &str, old: &Tokens) -> Result<Tokens, Str
         .body(body)
         .send()
         .await
-        .map_err(|e| super::network_failure("token refresh network failure", e))?;
-    if !r.status().is_success() {
-        return Err("Spotify rejected token refresh; sign in again".into());
+        .map_err(|e| {
+            RefreshError::temporary(super::network_failure("token refresh network failure", e))
+        })?;
+    // Spotify answers a revoked or invalid refresh token with 400 (`invalid_grant`) or 401;
+    // other failures, such as 5xx or rate limits, may pass.
+    match r.status().as_u16() {
+        400 | 401 => {
+            return Err(RefreshError::rejected(
+                "Spotify rejected token refresh; sign in again",
+            ));
+        }
+        _ if !r.status().is_success() => {
+            return Err(RefreshError::temporary(format!(
+                "Spotify token refresh failed (HTTP {})",
+                r.status().as_u16()
+            )));
+        }
+        _ => {}
     }
     #[derive(Deserialize)]
     struct Reply {
@@ -261,7 +300,7 @@ pub(crate) async fn refresh(client_id: &str, old: &Tokens) -> Result<Tokens, Str
     let t: Reply = r
         .json()
         .await
-        .map_err(|_| "invalid token refresh response")?;
+        .map_err(|_| RefreshError::temporary("invalid token refresh response"))?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

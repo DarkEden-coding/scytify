@@ -106,6 +106,10 @@ impl Api {
             None
         };
         let transfer = plan(observation, source, Instant::now())?;
+        // Spotify refuses to pause a device that is already paused (403).
+        if !transfer.play {
+            return Ok(transfer);
+        }
         let query = transfer
             .pause_device_id
             .as_ref()

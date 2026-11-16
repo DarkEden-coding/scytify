@@ -34,7 +34,7 @@ pub const HINTS: &[(&str, &str)] = &[
     ("/ or Ctrl + L", "Search"),
     (
         "Esc",
-        "Close the device picker, Settings or the queue, leave search",
+        "Close menus, the device picker, Settings, the queue or lyrics",
     ),
     ("Alt + Left / Right", "Back or forward"),
     ("Ctrl + = / -", "Zoom in or out"),
@@ -53,7 +53,7 @@ pub const HINTS: &[(&str, &str)] = &[
     ("/ or Cmd or Ctrl + L", "Search"),
     (
         "Esc",
-        "Close the device picker, Settings or the queue, leave search",
+        "Close menus, the device picker, Settings, the queue or lyrics",
     ),
     ("Option + Left / Right", "Back or forward"),
     ("Cmd or Ctrl + = / -", "Zoom in or out"),

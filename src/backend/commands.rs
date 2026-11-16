@@ -702,6 +702,7 @@ pub(super) fn handle_command(
         }
         Action::SetVisible(_) => ok!(),
         Action::Quit
+        | Action::RetryLogin
         | Action::PlayDiscover
         | Action::TransferPlayback { .. }
         | Action::SetDeviceVolume { .. }
@@ -813,6 +814,18 @@ mod tests {
         let api = api::Api::new().unwrap();
         let track_id = SpotifyId("0123456789012345678901".into());
         store.cache_lyrics(&track_id, &None).unwrap();
+        let found_id = SpotifyId("1123456789012345678901".into());
+        let found = Lyrics {
+            track_id: found_id.clone(),
+            sync: LyricsSync::Static,
+            lines: Vec::new(),
+            credit: LyricsCredit {
+                source: LyricsSource::Spotify,
+                uploader: None,
+                maker: None,
+            },
+        };
+        store.cache_lyrics(&found_id, &Some(found.clone())).unwrap();
         for key in [None, Some("sl_sk_unused_test_key".into())] {
             let has_key = key.is_some();
             let mut lyrics = lyrics::Client::new(key).unwrap();
@@ -860,6 +873,13 @@ mod tests {
             );
             if has_key {
                 assert!(matches!(result, Some(Ok(Response::Lyrics(None)))));
+                let hit = dispatch!(
+                    Action::Lyrics {
+                        track_id: found_id.clone()
+                    },
+                    5
+                );
+                assert!(matches!(hit, Some(Ok(Response::Lyrics(Some(l)))) if l == found));
             } else {
                 assert!(matches!(
                     result,

@@ -201,7 +201,10 @@ pub enum PlaySource {
     Track(SpotifyId),
     /// An explicit ordered list, such as a playlist narrowed by the lyrics filter. Playback
     /// follows exactly this list; `start` indexes into it.
-    Tracks { tracks: Vec<Track>, start: usize },
+    Tracks {
+        tracks: Vec<Track>,
+        start: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +214,9 @@ pub enum Action {
     /// One-time librespot consent, explicitly requested by the user.
     AuthorizePlayback,
     CancelLogin,
+    /// Try saved credentials again after a failed sign-in check (`AuthState::Retrying`) or
+    /// an unreadable credential store (`AuthState::Blocked`).
+    RetryLogin,
     Logout,
     /// Remove disposable metadata/art/audio without clearing credentials or session preferences.
     ClearCache,
