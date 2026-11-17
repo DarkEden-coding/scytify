@@ -124,6 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _runtime_context = runtime.enter();
         frontend::run(frontend_port)
     };
+    // Launchers discard stderr, where the error returned from `main` would go.
+    if let Err(error) = &ui_result {
+        log::error!("Window stopped: {error}");
+    }
     runtime.block_on(async {
         let _ = tokio::time::timeout(
             Duration::from_secs(1),

@@ -429,6 +429,16 @@ pub fn banner(
     }
 }
 
+/// Progress of an in-app update, in the top bar.
+pub fn update_progress(p: &Palette) -> impl Fn(&Theme) -> widget::progress_bar::Style + 'static {
+    let c = p.colors;
+    move |_| widget::progress_bar::Style {
+        background: mix(c.surface, c.text, 0.12).into(),
+        bar: c.accent.into(),
+        border: Border::default().rounded(2.0),
+    }
+}
+
 /// Volume rail of a device that cannot change its volume: the slider's rail, inert.
 pub fn inert_rail(p: &Palette) -> impl Fn(&Theme) -> widget::progress_bar::Style + 'static {
     let c = p.colors;

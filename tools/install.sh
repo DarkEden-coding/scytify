@@ -10,17 +10,26 @@ if [[ "$(uname -s)" == Darwin ]]; then
 fi
 
 # Started by the app's own update: it quits itself once this script returns, so open the new
-# build after its process (SCYTIFY_UPDATE_PID) has gone.
+# build after its process (SCYTIFY_UPDATE_PID) has gone. The watcher gets its own systemd scope
+# when it can, so a launcher that stops the app's unit on exit does not take the watcher with it.
 relaunch_after_exit() {
-    local pid=$1; shift
-    nohup sh -c 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"' "$pid" "$@" \
-        >/dev/null 2>&1 </dev/null &
+    local detach=()
+    if command -v systemd-run >/dev/null && systemd-run --user --scope --quiet --collect true 2>/dev/null; then
+        detach=(systemd-run --user --scope --quiet --collect --)
+    fi
+    nohup "${detach[@]}" tools/relaunch-after-exit.sh "$@" </dev/null &
+}
+
+# Progress markers the app reads from the update log.
+step() {
+    if [ -n "${SCYTIFY_UPDATE_PID:-}" ]; then echo "scytify-step: $1"; fi
 }
 
 name=scytify
 bin="$HOME/.local/bin/$name"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 
+step build
 cargo build --release
 
 was_running=false
@@ -42,6 +51,7 @@ if [ -z "${SCYTIFY_UPDATE_PID:-}" ] && pgrep -x "$name" >/dev/null; then
     fi
 fi
 
+step install
 install -Dm755 "target/release/$name" "$bin"
 for size in 16 32 48 64 128 256 512; do
     install -Dm644 "assets/icons/$name-$size.png" \
@@ -58,7 +68,8 @@ kbuildsycoca6 >/dev/null 2>&1 || true
 
 echo "Installed $bin"
 if [ -n "${SCYTIFY_UPDATE_PID:-}" ]; then
-    relaunch_after_exit "$SCYTIFY_UPDATE_PID" setsid "$bin"
+    relaunch_after_exit "$SCYTIFY_UPDATE_PID" setsid -f "$bin"
+    step restart
     echo "Relaunching after the app quits."
     exit 0
 fi

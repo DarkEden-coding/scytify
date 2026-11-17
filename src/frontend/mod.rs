@@ -126,6 +126,7 @@ enum Message {
     UpdateChecked(bool),
     /// Pull and reinstall from the checkout this was built from.
     Update,
+    UpdateProgress(update::Stage),
     /// The new build is installed; quit so it can open.
     UpdateInstalled,
     UpdateFailed(String),
@@ -302,8 +303,8 @@ struct Ui {
     search_generation: u64,
     /// The checkout this was built from is behind its upstream branch.
     update_available: bool,
-    /// Pull and reinstall is running.
-    updating: bool,
+    /// Pull and reinstall is running, at this stage.
+    updating: Option<update::Stage>,
     settings: bool,
     queue: bool,
     /// Connect device picker is open.
@@ -377,7 +378,7 @@ impl Ui {
             quit_pending: None,
             quit_failed: false,
             update_available: false,
-            updating: false,
+            updating: None,
             active: HashSet::new(),
             artwork: Default::default(),
             window_size,
@@ -1552,28 +1553,31 @@ impl Ui {
                 }
             }
             Message::CheckUpdate => {
-                if !self.updating {
+                if self.updating.is_none() {
                     return Task::perform(update::check(), Message::UpdateChecked);
                 }
             }
             Message::UpdateChecked(available) => self.update_available = available,
             Message::Update => {
-                if !self.updating {
-                    self.updating = true;
-                    return Task::perform(update::install(), |result| match result {
-                        Ok(()) => Message::UpdateInstalled,
-                        Err(error) => Message::UpdateFailed(error),
+                if self.updating.is_none() {
+                    self.updating = Some(update::Stage::Downloading);
+                    return Task::run(update::install(), |event| match event {
+                        update::Event::Progress(stage) => Message::UpdateProgress(stage),
+                        update::Event::Finished(Ok(())) => Message::UpdateInstalled,
+                        update::Event::Finished(Err(error)) => Message::UpdateFailed(error),
                     });
                 }
             }
+            Message::UpdateProgress(stage) => self.updating = Some(stage),
             Message::UpdateInstalled => {
-                // The installer's watcher opens the new build once this process has exited.
-                self.updating = false;
+                // The installer's watcher opens the new build once this process has exited;
+                // the bar shows the restart until then.
+                self.updating = Some(update::Stage::Restarting);
                 self.update_available = false;
                 return self.reduce(Message::Action(Action::Quit));
             }
             Message::UpdateFailed(error) => {
-                self.updating = false;
+                self.updating = None;
                 log::error!("{error}");
                 self.show_notice(error);
             }

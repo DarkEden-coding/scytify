@@ -1,12 +1,14 @@
 //! App icon, history arrows, search, the stats/settings toggles and the window buttons above
 //! the main view. With the custom title bar, empty space in the bar drags the window.
 use super::*;
-use iced::widget::{image, mouse_area, rule, text_input};
+use iced::widget::{column, image, mouse_area, progress_bar, rule, text_input};
 
 /// Height of the top bar; the scroll area below it starts here.
 pub(super) const TOP_BAR_HEIGHT: f32 = 64.0;
 /// Edge of the app icon at the left of the custom title bar.
 const APP_ICON: f32 = 24.0;
+/// Width of the update progress label and bar.
+const UPDATE_PROGRESS_WIDTH: f32 = 150.0;
 
 impl Ui {
     pub(super) fn top_bar(&self) -> Element<'_> {
@@ -63,12 +65,10 @@ impl Ui {
                     .on_toggle(Message::LyricsOnly),
             )
             .push(space().width(Length::Fill));
-        if self.update_available {
-            let mut update = self.icon_button(Icon::Update, 20.0, true, Message::Update);
-            if self.updating {
-                update = update.on_press_maybe(None);
-            }
-            bar = bar.push(update);
+        if let Some(stage) = self.updating {
+            bar = bar.push(self.update_progress(stage));
+        } else if self.update_available {
+            bar = bar.push(self.icon_button(Icon::Update, 20.0, true, Message::Update));
         }
         bar = bar
             .push(self.icon_button(Icon::Stats, 20.0, self.stats_open(), Message::Stats))
@@ -92,6 +92,20 @@ impl Ui {
         } else {
             bar.into()
         }
+    }
+
+    /// Stage of a running update over a bar of how far it has got.
+    fn update_progress(&self, stage: update::Stage) -> Element<'_> {
+        column![
+            self.subdued(stage.label()),
+            progress_bar(0.0..=1.0, stage.fraction())
+                .girth(4)
+                .length(UPDATE_PROGRESS_WIDTH)
+                .style(styles::update_progress(&self.palette)),
+        ]
+        .spacing(4)
+        .width(UPDATE_PROGRESS_WIDTH)
+        .into()
     }
 
     /// Minimize, maximize or restore, and close.

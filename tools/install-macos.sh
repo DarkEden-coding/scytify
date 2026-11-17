@@ -14,13 +14,17 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 # Started by the app's own update: it quits itself once this script returns, so open the new
 # build after its process (SCYTIFY_UPDATE_PID) has gone.
 relaunch_after_exit() {
-    local pid=$1; shift
-    nohup sh -c 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"' "$pid" "$@" \
-        >/dev/null 2>&1 </dev/null &
+    nohup tools/relaunch-after-exit.sh "$@" </dev/null &
+}
+
+# Progress markers the app reads from the update log.
+step() {
+    if [ -n "${SCYTIFY_UPDATE_PID:-}" ]; then echo "scytify-step: $1"; fi
 }
 
 # rustc strips through rust-objcopy, which some rustup macOS toolchains ship unable to load
 # libLLVM.dylib ("stripping debug info ... failed"); Apple's strip does the same job below.
+step build
 CARGO_PROFILE_RELEASE_STRIP=none cargo build --release --locked
 
 was_running=false
@@ -40,6 +44,7 @@ if [ -z "${SCYTIFY_UPDATE_PID:-}" ] && pgrep -x "$name" >/dev/null; then
     fi
 fi
 
+step install
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -105,6 +110,7 @@ mdimport "$app" 2>/dev/null || true
 echo "Installed $app"
 if [ -n "${SCYTIFY_UPDATE_PID:-}" ]; then
     relaunch_after_exit "$SCYTIFY_UPDATE_PID" open "$app"
+    step restart
     echo "Relaunching after the app quits."
     exit 0
 fi
