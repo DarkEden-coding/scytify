@@ -28,7 +28,7 @@ mod view;
 use crate::{app_icon, contracts::*, domain::*};
 use iced::futures::SinkExt;
 use iced::{Subscription, Task, Theme, window};
-use navigation::{AlbumScroll, History, Route, is_search};
+use navigation::{History, ListScroll, Route, is_search};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -284,8 +284,8 @@ struct Ui {
     /// Measured height of the main scroll area's content.
     main_content_height: f32,
     reset_scroll: bool,
-    album_scroll: AlbumScroll,
-    /// Offset to restore once the album page that is loading arrives.
+    list_scroll: ListScroll,
+    /// Offset to restore once the song list that is loading arrives.
     restore_scroll: Option<f32>,
     glide: smooth_scroll::SmoothScroll,
     pending_play: Option<pending_play::PendingPlay>,
@@ -457,7 +457,7 @@ impl Ui {
             main_size: iced::Size::ZERO,
             main_content_height: 0.0,
             reset_scroll: false,
-            album_scroll: AlbumScroll::default(),
+            list_scroll: ListScroll::default(),
             restore_scroll: None,
             glide: smooth_scroll::SmoothScroll::default(),
             pending_play: None,
@@ -909,7 +909,7 @@ impl Ui {
         self.queue_scroll = 0.0;
         self.queue = false;
         self.history = History::default();
-        self.album_scroll = AlbumScroll::default();
+        self.list_scroll = ListScroll::default();
         let home: Route = Route::home();
         self.query = home.query;
         self.title = home.title;
@@ -1087,7 +1087,7 @@ impl Ui {
         }
         // Home's playlist shelf shows the first playlists, but the full grid may have
         // replaced its run with one further down.
-        self.remember_album_scroll();
+        self.remember_list_scroll();
         let changed: bool = route.query != self.query
             || (route.home
                 && self
@@ -1109,33 +1109,38 @@ impl Ui {
         } else if let Err(e) = persistence::Preferences::save(self) {
             self.notice = e;
         }
-        self.recall_album_scroll();
+        self.recall_list_scroll();
     }
-    /// The album shown in the main view, unless Settings covers it.
-    fn open_album(&self) -> Option<&SpotifyId> {
+    /// The song list (album, playlist or Liked Songs) shown in the main view, unless
+    /// Settings covers it.
+    fn open_list(&self) -> Option<&Query> {
         match &self.query {
-            Query::AlbumTracks { album_id } if !self.settings => Some(album_id),
+            Query::AlbumTracks { .. } | Query::PlaylistTracks { .. } | Query::LikedTracks
+                if !self.settings =>
+            {
+                Some(&self.query)
+            }
             _ => None,
         }
     }
-    /// Keep the open album's offset before leaving it; an album still loading keeps the
+    /// Keep the open song list's offset before leaving it; a list still loading keeps the
     /// offset it was opened with.
-    fn remember_album_scroll(&mut self) {
+    fn remember_list_scroll(&mut self) {
         if self.data.is_none() || self.restore_scroll.is_some() {
             return;
         }
-        if let Some(id) = self.open_album() {
+        if let Some(list) = self.open_list() {
             let y: f32 = self.scroll;
-            let id: SpotifyId = id.clone();
-            self.album_scroll.remember(&id, y);
+            let list: Query = list.clone();
+            self.list_scroll.remember(&list, y);
         }
     }
-    /// Return to where the opened album was left: now if its songs are shown, otherwise
+    /// Return to where the opened song list was left: now if its songs are shown, otherwise
     /// once they arrive.
-    fn recall_album_scroll(&mut self) {
+    fn recall_list_scroll(&mut self) {
         let Some(y) = self
-            .open_album()
-            .and_then(|id| self.album_scroll.recall(id))
+            .open_list()
+            .and_then(|list| self.list_scroll.recall(list))
         else {
             return;
         };
@@ -3301,10 +3306,10 @@ mod browsing_tests {
         let _ = ui.update(Message::Back);
         assert!(!ui.settings);
     }
-    /// Reopening an album returns to where it was left once its songs arrive, and
-    /// Settings shown over it keeps the offset too.
+    /// Reopening an album or playlist returns to where it was left once its songs arrive,
+    /// and Settings shown over it keeps the offset too.
     #[test]
-    fn albums_reopen_where_they_were_left() {
+    fn song_lists_reopen_where_they_were_left() {
         let (mut ui, mut back) = channel_tests::fixture();
         let album = |id: &str| {
             Route::browse(
@@ -3335,13 +3340,26 @@ mod browsing_tests {
         let (id, songs) = open(&mut ui, Message::Navigate(album("first")));
         complete(&mut ui, id, songs);
         let _ = ui.update(Message::Scroll(800.0, 700.0));
-        let (id, songs) = open(&mut ui, Message::Navigate(album("second")));
+        let playlist = Route::browse(
+            Query::PlaylistTracks {
+                playlist_id: SpotifyId("mix".into()),
+            },
+            "mix",
+            None,
+        );
+        let (id, songs) = open(&mut ui, Message::Navigate(playlist));
         complete(&mut ui, id, songs);
         assert_eq!(ui.scroll, 0.0);
+        let _ = ui.update(Message::Scroll(300.0, 700.0));
         let (id, songs) = open(&mut ui, Message::Back);
         assert_eq!(ui.scroll, 0.0);
         complete(&mut ui, id, songs);
         assert_eq!(ui.scroll, 800.0);
+        let (id, songs) = open(&mut ui, Message::Forward);
+        complete(&mut ui, id, songs);
+        assert_eq!(ui.scroll, 300.0);
+        let (id, songs) = open(&mut ui, Message::Back);
+        complete(&mut ui, id, songs);
         let _ = ui.update(Message::Settings);
         let _ = ui.update(Message::Settings);
         assert_eq!(ui.scroll, 800.0);
