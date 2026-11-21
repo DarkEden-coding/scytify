@@ -110,10 +110,11 @@ async fn run_install(output: &mut Sender<Event>) -> Result<(), String> {
     let log = File::create(&log_path).map_err(|e| e.to_string())?;
     let mut reader = File::open(&log_path).map_err(|e| e.to_string())?;
     let mut child = Command::new("sh")
-        // Apps opened from a launcher get a minimal PATH without rustup's cargo.
+        // Apps opened from a launcher get a minimal PATH without cargo, so take the PATH the
+        // user's login shell sets up (rustup from Homebrew or a profile), plus rustup's default.
         .args([
             "-c",
-            r#"PATH="$HOME/.cargo/bin:$PATH"; echo "scytify-step: download"; git pull --ff-only && exec tools/install.sh"#,
+            r#"PATH="$("${SHELL:-/bin/zsh}" -lc 'printf %s "$PATH"' </dev/null 2>/dev/null):$HOME/.cargo/bin:$PATH"; echo "scytify-step: download"; git pull --ff-only && exec tools/install.sh"#,
         ])
         .current_dir(REPO)
         .env("GIT_TERMINAL_PROMPT", "0")
