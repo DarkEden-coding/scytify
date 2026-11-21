@@ -76,6 +76,10 @@ pub enum Icon {
     Stats,
     /// Pull and install a newer build (Lucide `circle-arrow-down`).
     Update,
+    /// Scroll to the top of a page (Lucide `arrow-up-to-line`).
+    ToTop,
+    /// Scroll to the bottom of a page (Lucide `arrow-down-to-line`).
+    ToBottom,
 }
 
 impl Icon {
@@ -130,6 +134,8 @@ impl Icon {
             Icon::Link => '\u{e102}',
             Icon::Stats => '\u{e2a3}',
             Icon::Update => '\u{e078}',
+            Icon::ToTop => '\u{e45b}',
+            Icon::ToBottom => '\u{e455}',
         }
     }
 
@@ -182,6 +188,8 @@ impl Icon {
             Icon::Link => "Link",
             Icon::Stats => "Stats",
             Icon::Update => "Update",
+            Icon::ToTop => "Top",
+            Icon::ToBottom => "Bottom",
         }
     }
 }

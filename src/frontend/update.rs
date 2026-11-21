@@ -57,7 +57,10 @@ fn installed_is_stale(built: &str, head: &str) -> bool {
 pub(super) enum Stage {
     Downloading,
     /// Cargo's finished and total build units; `total` is zero until cargo reports it.
-    Building { done: u32, total: u32 },
+    Building {
+        done: u32,
+        total: u32,
+    },
     Installing,
     /// Installed; the app quits and the new build opens.
     Restarting,
@@ -243,13 +246,19 @@ mod tests {
         assert_eq!(parser.feed("\r    Building [=>   ] 12/6"), None);
         assert_eq!(
             parser.feed("73: serde, tokio\r    Building [===> ] 672/673: scytify(bin)"),
-            Some(Stage::Building { done: 672, total: 673 })
+            Some(Stage::Building {
+                done: 672,
+                total: 673
+            })
         );
         assert_eq!(parser.feed("\r      \r"), None);
         assert_eq!(
             parser.feed("    Finished `release`\nscytify-step: install\nInstalled\n"),
             Some(Stage::Installing)
         );
-        assert_eq!(parser.feed("scytify-step: restart\n"), Some(Stage::Restarting));
+        assert_eq!(
+            parser.feed("scytify-step: restart\n"),
+            Some(Stage::Restarting)
+        );
     }
 }

@@ -263,23 +263,58 @@ impl Ui {
             .into()
     }
 
-    /// Main scroll area; reports its size and scroll position.
+    /// Main scroll area; reports its size, content height and scroll position.
     fn scroll_page<'a>(&self, content: Element<'a>) -> Element<'a> {
-        let area = scrollable(
+        let content = sensor(
             container(content)
                 .width(Length::Fill)
                 .padding(iced::Padding::ZERO.bottom(CONTENT_PADDING)),
         )
-        .id(Area::Main.id())
-        .on_scroll(|v| Message::Scrolled(Area::Main, Metrics::of(&v)))
-        .direction(thin_scrollbar())
-        .style(styles::scrollbar(&self.palette))
-        .width(Length::Fill)
-        .height(Length::Fill);
-        sensor(smooth_wheel(area, Area::Main))
+        .on_resize(Message::MainContentResized);
+        let area = scrollable(content)
+            .id(Area::Main.id())
+            .on_scroll(|v| Message::Scrolled(Area::Main, Metrics::of(&v)))
+            .direction(thin_scrollbar())
+            .style(styles::scrollbar(&self.palette))
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let area = sensor(smooth_wheel(area, Area::Main))
             .on_show(Message::MainResized)
-            .on_resize(Message::MainResized)
+            .on_resize(Message::MainResized);
+        stack![area, self.scroll_edges()].into()
+    }
+
+    /// "Scroll to top" and "Scroll to bottom" in the bottom-right corner, each shown while
+    /// the page is not already there.
+    fn scroll_edges<'a>(&self) -> Element<'a> {
+        let max: f32 = self.main_max_scroll();
+        let mut buttons = column![].spacing(8);
+        if self.scroll > 1.0 {
+            buttons = buttons.push(self.scroll_edge_button(Icon::ToTop, false));
+        }
+        if self.scroll < max - 1.0 {
+            buttons = buttons.push(self.scroll_edge_button(Icon::ToBottom, true));
+        }
+        container(buttons)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(CONTENT_PADDING)
+            .align_x(Alignment::End)
+            .align_y(Alignment::End)
             .into()
+    }
+
+    fn scroll_edge_button<'a>(&self, which: Icon, bottom: bool) -> Element<'a> {
+        let hint: &str = if bottom {
+            "Scroll to bottom"
+        } else {
+            "Scroll to top"
+        };
+        self.tip(
+            self.history_button(which)
+                .on_press(Message::ScrollToEdge(bottom)),
+            hint,
+        )
     }
 
     /// Fixed-height section heading above a grid.

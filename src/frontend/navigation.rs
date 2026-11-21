@@ -1,8 +1,10 @@
 //! Browser routes and a bounded back/forward history.
 use crate::contracts::{Query, StatsRange};
-use crate::domain::{Album, Artist, Playlist};
+use crate::domain::{Album, Artist, Playlist, SpotifyId};
 
 const MAX_HISTORY: usize = 50;
+/// Albums whose scroll offset is kept; the least recently left is dropped first.
+const MAX_ALBUM_OFFSETS: usize = 100;
 
 /// One place in the main view: a backend query, or Settings shown over it.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,10 +112,32 @@ impl History {
     }
 }
 
+/// Where each album was last scrolled to this session, so reopening it returns to the same rows.
+#[derive(Default)]
+pub struct AlbumScroll {
+    /// Least recently left first.
+    offsets: Vec<(SpotifyId, f32)>,
+}
+
+impl AlbumScroll {
+    pub fn remember(&mut self, album_id: &SpotifyId, y: f32) {
+        self.offsets.retain(|(id, _)| id != album_id);
+        self.offsets.push((album_id.clone(), y));
+        if self.offsets.len() > MAX_ALBUM_OFFSETS {
+            self.offsets.remove(0);
+        }
+    }
+    pub fn recall(&self, album_id: &SpotifyId) -> Option<f32> {
+        self.offsets
+            .iter()
+            .find(|(id, _)| id == album_id)
+            .map(|&(_, y)| y)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::SpotifyId;
     #[test]
     fn back_and_forward_walk_the_same_path() {
         let album: Route = Route::browse(
@@ -136,5 +160,19 @@ mod tests {
             history.push(Route::browse(Query::OwnPlaylists, "x", None));
         }
         assert!(history.back.len() <= MAX_HISTORY);
+    }
+
+    #[test]
+    fn album_scroll_keeps_the_latest_offset_and_drops_the_oldest() {
+        let id = |n: usize| SpotifyId(format!("album{n}"));
+        let mut scroll: AlbumScroll = AlbumScroll::default();
+        scroll.remember(&id(0), 100.0);
+        scroll.remember(&id(0), 250.0);
+        assert_eq!(scroll.recall(&id(0)), Some(250.0));
+        for n in 1..=MAX_ALBUM_OFFSETS {
+            scroll.remember(&id(n), n as f32);
+        }
+        assert_eq!(scroll.recall(&id(0)), None);
+        assert_eq!(scroll.recall(&id(1)), Some(1.0));
     }
 }

@@ -28,7 +28,7 @@ mod view;
 use crate::{app_icon, contracts::*, domain::*};
 use iced::futures::SinkExt;
 use iced::{Subscription, Task, Theme, window};
-use navigation::{History, Route, is_search};
+use navigation::{AlbumScroll, History, Route, is_search};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -84,6 +84,10 @@ enum Message {
     /// Main view scroll offset and viewport height.
     Scroll(f32, f32),
     MainResized(iced::Size),
+    /// Height of everything inside the main scroll area.
+    MainContentResized(iced::Size),
+    /// Jump the main scroll area to its top (`false`) or bottom (`true`).
+    ScrollToEdge(bool),
     HoverRow(usize, bool),
     SelectRow(usize),
     TrackFilter(String),
@@ -277,7 +281,12 @@ struct Ui {
     scroll: f32,
     /// Measured size of the main scroll area; estimated until the first layout.
     main_size: iced::Size,
+    /// Measured height of the main scroll area's content.
+    main_content_height: f32,
     reset_scroll: bool,
+    album_scroll: AlbumScroll,
+    /// Offset to restore once the album page that is loading arrives.
+    restore_scroll: Option<f32>,
     glide: smooth_scroll::SmoothScroll,
     pending_play: Option<pending_play::PendingPlay>,
     hovered_row: Option<usize>,
@@ -446,7 +455,10 @@ impl Ui {
             offset: 0,
             scroll: 0.0,
             main_size: iced::Size::ZERO,
+            main_content_height: 0.0,
             reset_scroll: false,
+            album_scroll: AlbumScroll::default(),
+            restore_scroll: None,
             glide: smooth_scroll::SmoothScroll::default(),
             pending_play: None,
             hovered_row: None,
@@ -607,6 +619,7 @@ impl Ui {
         self.library.retry_failed();
         self.scroll = 0.0;
         self.reset_scroll = true;
+        self.restore_scroll = None;
         self.hovered_row = None;
         self.selected_row = None;
         self.track_filter.clear();
@@ -896,6 +909,7 @@ impl Ui {
         self.queue_scroll = 0.0;
         self.queue = false;
         self.history = History::default();
+        self.album_scroll = AlbumScroll::default();
         let home: Route = Route::home();
         self.query = home.query;
         self.title = home.title;
@@ -1073,6 +1087,7 @@ impl Ui {
         }
         // Home's playlist shelf shows the first playlists, but the full grid may have
         // replaced its run with one further down.
+        self.remember_album_scroll();
         let changed: bool = route.query != self.query
             || (route.home
                 && self
@@ -1094,6 +1109,47 @@ impl Ui {
         } else if let Err(e) = persistence::Preferences::save(self) {
             self.notice = e;
         }
+        self.recall_album_scroll();
+    }
+    /// The album shown in the main view, unless Settings covers it.
+    fn open_album(&self) -> Option<&SpotifyId> {
+        match &self.query {
+            Query::AlbumTracks { album_id } if !self.settings => Some(album_id),
+            _ => None,
+        }
+    }
+    /// Keep the open album's offset before leaving it; an album still loading keeps the
+    /// offset it was opened with.
+    fn remember_album_scroll(&mut self) {
+        if self.data.is_none() || self.restore_scroll.is_some() {
+            return;
+        }
+        if let Some(id) = self.open_album() {
+            let y: f32 = self.scroll;
+            let id: SpotifyId = id.clone();
+            self.album_scroll.remember(&id, y);
+        }
+    }
+    /// Return to where the opened album was left: now if its songs are shown, otherwise
+    /// once they arrive.
+    fn recall_album_scroll(&mut self) {
+        let Some(y) = self
+            .open_album()
+            .and_then(|id| self.album_scroll.recall(id))
+        else {
+            return;
+        };
+        if self.data.is_some() {
+            self.scroll = y;
+            self.reset_scroll = true;
+            self.ensure_window();
+        } else {
+            self.restore_scroll = Some(y);
+        }
+    }
+    /// Largest offset of the main scroll area.
+    fn main_max_scroll(&self) -> f32 {
+        (self.main_content_height - self.main_size.height).max(0.0)
     }
     /// Reduce one message, then reconcile artwork and pending scroll resets.
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1599,6 +1655,12 @@ impl Ui {
                 self.main_size = size;
                 self.ensure_window();
             }
+            Message::MainContentResized(size) => self.main_content_height = size.height,
+            Message::ScrollToEdge(bottom) => {
+                self.scroll = if bottom { self.main_max_scroll() } else { 0.0 };
+                self.reset_scroll = true;
+                self.ensure_window();
+            }
             Message::HoverRow(index, entered) => {
                 if entered {
                     self.hovered_row = Some(index);
@@ -2011,6 +2073,10 @@ impl Ui {
             } else {
                 self.pending = None;
                 self.data = Some(data);
+                if let Some(y) = self.restore_scroll.take() {
+                    self.scroll = y;
+                    self.reset_scroll = true;
+                }
             }
             self.ensure_window();
         }
@@ -3234,6 +3300,51 @@ mod browsing_tests {
         assert!(ui.settings && matches!(ui.query, Query::AlbumTracks { .. }));
         let _ = ui.update(Message::Back);
         assert!(!ui.settings);
+    }
+    /// Reopening an album returns to where it was left once its songs arrive, and
+    /// Settings shown over it keeps the offset too.
+    #[test]
+    fn albums_reopen_where_they_were_left() {
+        let (mut ui, mut back) = channel_tests::fixture();
+        let album = |id: &str| {
+            Route::browse(
+                Query::AlbumTracks {
+                    album_id: SpotifyId(id.into()),
+                },
+                id,
+                None,
+            )
+        };
+        let mut open = |ui: &mut Ui, route: Message| {
+            let _ = ui.update(route);
+            let mut last = None;
+            while let Ok(command) = back.commands.try_recv() {
+                if matches!(command.action, Action::Fetch { .. }) {
+                    last = Some(command.id);
+                }
+            }
+            let songs = Response::Page(PageData::Tracks(Page {
+                offset: 0,
+                total: Some(40),
+                items: (0..40).map(|n| track(&n.to_string(), Some(n))).collect(),
+                has_more: false,
+                next_offset: 40,
+            }));
+            (last.unwrap(), songs)
+        };
+        let (id, songs) = open(&mut ui, Message::Navigate(album("first")));
+        complete(&mut ui, id, songs);
+        let _ = ui.update(Message::Scroll(800.0, 700.0));
+        let (id, songs) = open(&mut ui, Message::Navigate(album("second")));
+        complete(&mut ui, id, songs);
+        assert_eq!(ui.scroll, 0.0);
+        let (id, songs) = open(&mut ui, Message::Back);
+        assert_eq!(ui.scroll, 0.0);
+        complete(&mut ui, id, songs);
+        assert_eq!(ui.scroll, 800.0);
+        let _ = ui.update(Message::Settings);
+        let _ = ui.update(Message::Settings);
+        assert_eq!(ui.scroll, 800.0);
     }
     /// The header button of the page that started playback toggles it; Escape closes
     /// Settings before the queue.

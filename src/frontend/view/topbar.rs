@@ -132,7 +132,7 @@ impl Ui {
     }
 
     /// Round back/forward button; disabled without history in that direction.
-    fn history_button<'a>(&self, which: Icon) -> iced::widget::Button<'a, Message> {
+    pub(super) fn history_button<'a>(&self, which: Icon) -> iced::widget::Button<'a, Message> {
         button(glyph(&self.palette, which, 20.0))
             .padding(6)
             .style(styles::history_button(&self.palette))
