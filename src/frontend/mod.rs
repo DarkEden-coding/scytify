@@ -74,6 +74,8 @@ enum Message {
     Search(String),
     SearchNow,
     SearchDebounced(u64),
+    /// Scrolling a song list stopped; carries the scroll generation it was started for.
+    ScrollSettled(u64),
     FocusSearch,
     /// Sidebar "Search": open the search page for the current text and focus the field.
     OpenSearch,
@@ -310,6 +312,8 @@ struct Ui {
     requests: HashMap<RequestId, u64>,
     search: String,
     search_generation: u64,
+    /// Bumped by each song list scroll, so only the last one saves its offset.
+    scroll_generation: u64,
     /// The checkout this was built from is behind its upstream branch.
     update_available: bool,
     /// Pull and reinstall is running, at this stage.
@@ -480,6 +484,7 @@ impl Ui {
             requests: HashMap::new(),
             search: String::new(),
             search_generation: 0,
+            scroll_generation: 0,
             settings: false,
             queue: false,
             devices: false,
@@ -1140,6 +1145,23 @@ impl Ui {
         }
         scroll
     }
+    /// Save the open song list's offset once scrolling has been still for a second. Quitting
+    /// can end the process without a last save (Cmd+Q on macOS), so saving only on
+    /// navigation or quit would lose it.
+    fn save_list_scroll_later(&mut self) -> Task<Message> {
+        if self.open_list().is_none() {
+            return Task::none();
+        }
+        self.scroll_generation = self.scroll_generation.wrapping_add(1);
+        let generation: u64 = self.scroll_generation;
+        Task::perform(
+            async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                generation
+            },
+            Message::ScrollSettled,
+        )
+    }
     /// Return to where the opened song list was left: now if its songs are shown, otherwise
     /// once they arrive.
     fn recall_list_scroll(&mut self) {
@@ -1668,6 +1690,7 @@ impl Ui {
                 self.scroll = y;
                 self.main_size.height = height;
                 self.ensure_window();
+                return self.save_list_scroll_later();
             }
             Message::MainResized(size) => {
                 self.main_size = size;
@@ -1678,6 +1701,14 @@ impl Ui {
                 self.scroll = if bottom { self.main_max_scroll() } else { 0.0 };
                 self.reset_scroll = true;
                 self.ensure_window();
+                return self.save_list_scroll_later();
+            }
+            Message::ScrollSettled(generation) => {
+                if generation == self.scroll_generation
+                    && let Err(e) = persistence::Preferences::save(self)
+                {
+                    self.notice = e;
+                }
             }
             Message::HoverRow(index, entered) => {
                 if entered {
@@ -3375,6 +3406,59 @@ mod browsing_tests {
         complete(&mut ui, id, songs);
         let _ = ui.update(Message::Settings);
         let _ = ui.update(Message::Settings);
+        assert_eq!(ui.scroll, 800.0);
+    }
+    /// A song list's offset is saved while it is open and restored after a restart.
+    #[test]
+    fn song_list_offset_survives_a_restart() {
+        let album = Route::browse(
+            Query::AlbumTracks {
+                album_id: SpotifyId("a".into()),
+            },
+            "a",
+            None,
+        );
+        let songs = || {
+            Response::Page(PageData::Tracks(Page {
+                offset: 0,
+                total: Some(40),
+                items: (0..40).map(|n| track(&n.to_string(), Some(n))).collect(),
+                has_more: false,
+                next_offset: 40,
+            }))
+        };
+        let last_fetch = |back: &mut BackendPort| {
+            let mut last = None;
+            while let Ok(command) = back.commands.try_recv() {
+                if matches!(command.action, Action::Fetch { .. }) {
+                    last = Some(command.id);
+                }
+            }
+            last.unwrap()
+        };
+        let signed_in = |ui: &mut Ui| {
+            ui.state.auth = AuthState::Ready {
+                user_id: "me".into(),
+            };
+        };
+        let (mut ui, mut back) = channel_tests::fixture();
+        signed_in(&mut ui);
+        let _ = ui.update(Message::Navigate(album));
+        let id = last_fetch(&mut back);
+        complete(&mut ui, id, songs());
+        let _ = ui.update(Message::Scroll(800.0, 700.0));
+        let _ = ui.update(Message::ScrollSettled(ui.scroll_generation));
+        let saved: String = serde_json::to_string(&persistence::Preferences::of(&ui)).unwrap();
+
+        let (mut ui, mut back) = channel_tests::fixture();
+        signed_in(&mut ui);
+        serde_json::from_str::<persistence::Preferences>(&saved)
+            .unwrap()
+            .apply(&mut ui);
+        let _ = ui.update(Message::Opened(window::Id::unique()));
+        let id = last_fetch(&mut back);
+        assert_eq!(ui.scroll, 0.0);
+        complete(&mut ui, id, songs());
         assert_eq!(ui.scroll, 800.0);
     }
     /// The header button of the page that started playback toggles it; Escape closes

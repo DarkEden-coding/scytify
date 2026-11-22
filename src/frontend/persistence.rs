@@ -278,6 +278,11 @@ impl Preferences {
                 None => Ok(()),
             };
         }
+        Self::of(ui).write()
+    }
+
+    /// The preferences of a signed-in UI: its route, panels, list offsets and window.
+    pub(super) fn of(ui: &Ui) -> Self {
         let (kind, key) = match &ui.query {
             Query::PlaylistTracks { playlist_id } => ("playlist", playlist_id.0.clone()),
             Query::ArtistAlbums { artist_id } => ("artist", artist_id.0.clone()),
@@ -318,7 +323,7 @@ impl Preferences {
             ..Self::default()
         };
         p.write_window(ui);
-        p.write()
+        p
     }
 
     /// Copy the window geometry, zoom and title bar choice from the UI.
