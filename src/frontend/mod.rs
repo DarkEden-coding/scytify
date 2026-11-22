@@ -609,9 +609,6 @@ impl Ui {
         self.cancel(previous);
         let more = self.more_pending.take().map(|(id, _)| id);
         self.cancel(more);
-        if let Err(e) = persistence::Preferences::save(self) {
-            self.notice = e;
-        }
         self.requests.clear();
         self.generation += 1;
         self.data = None;
@@ -620,6 +617,10 @@ impl Ui {
         self.scroll = 0.0;
         self.reset_scroll = true;
         self.restore_scroll = None;
+        // Saved once the old page is gone, so its offset is not kept under the new query.
+        if let Err(e) = persistence::Preferences::save(self) {
+            self.notice = e;
+        }
         self.hovered_row = None;
         self.selected_row = None;
         self.track_filter.clear();
@@ -1126,14 +1127,18 @@ impl Ui {
     /// Keep the open song list's offset before leaving it; a list still loading keeps the
     /// offset it was opened with.
     fn remember_list_scroll(&mut self) {
-        if self.data.is_none() || self.restore_scroll.is_some() {
-            return;
+        self.list_scroll = self.current_list_scroll();
+    }
+    /// The remembered offsets, with the open song list's current offset included.
+    fn current_list_scroll(&self) -> ListScroll {
+        let mut scroll: ListScroll = self.list_scroll.clone();
+        if self.data.is_some()
+            && self.restore_scroll.is_none()
+            && let Some(list) = self.open_list()
+        {
+            scroll.remember(list, self.scroll);
         }
-        if let Some(list) = self.open_list() {
-            let y: f32 = self.scroll;
-            let list: Query = list.clone();
-            self.list_scroll.remember(&list, y);
-        }
+        scroll
     }
     /// Return to where the opened song list was left: now if its songs are shown, otherwise
     /// once they arrive.
@@ -1201,6 +1206,7 @@ impl Ui {
                 self.fetch_sidebar();
                 if self.data.is_none() {
                     self.fetch();
+                    self.recall_list_scroll();
                 }
                 if self.queue
                     && !matches!(&self.queue_data, Some(PageData::Queue { revision, .. }) if *revision == self.state.player.queue_revision)
@@ -1322,6 +1328,7 @@ impl Ui {
                 {
                     self.fetch_sidebar();
                     self.fetch();
+                    self.recall_list_scroll();
                 }
                 // Listening from another device arrived.
                 if synced && self.window.is_some() && self.stats_open() {
@@ -1506,8 +1513,14 @@ impl Ui {
             Message::Shortcut(shortcut) => return self.shortcut(shortcut),
             Message::Action(action) => {
                 self.track_menu = None;
-                if matches!(action, Action::Quit) && (self.disconnected || self.quit_failed) {
-                    return iced::exit();
+                if matches!(action, Action::Quit) {
+                    // Keep where the open song list is scrolled for the next launch.
+                    if let Err(e) = persistence::Preferences::save(self) {
+                        self.notice = e;
+                    }
+                    if self.disconnected || self.quit_failed {
+                        return iced::exit();
+                    }
                 }
                 if let Action::Play(source) = &action {
                     self.play_context = self.context_for(source);

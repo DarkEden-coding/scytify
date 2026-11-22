@@ -4,7 +4,7 @@ use crate::domain::{Album, Artist, Playlist};
 
 const MAX_HISTORY: usize = 50;
 /// Song lists whose scroll offset is kept; the least recently left is dropped first.
-const MAX_LIST_OFFSETS: usize = 100;
+pub(super) const MAX_LIST_OFFSETS: usize = 100;
 
 /// One place in the main view: a backend query, or Settings shown over it.
 #[derive(Clone, Debug, PartialEq)]
@@ -112,9 +112,9 @@ impl History {
     }
 }
 
-/// Where each song list (album, playlist, Liked Songs) was last scrolled to this session, so
-/// reopening it returns to the same rows.
-#[derive(Default)]
+/// Where each song list (album, playlist, Liked Songs) was last scrolled to, so reopening it
+/// returns to the same rows; saved with the preferences so it lasts across restarts.
+#[derive(Clone, Default)]
 pub struct ListScroll {
     /// Least recently left first.
     offsets: Vec<(Query, f32)>,
@@ -133,6 +133,10 @@ impl ListScroll {
             .iter()
             .find(|(query, _)| query == list)
             .map(|&(_, y)| y)
+    }
+    /// Offsets, least recently left first.
+    pub fn entries(&self) -> impl Iterator<Item = &(Query, f32)> {
+        self.offsets.iter()
     }
 }
 

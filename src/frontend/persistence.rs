@@ -4,6 +4,48 @@ use serde::{Deserialize, Serialize};
 
 /// Largest window coordinate accepted from a preferences file.
 const MAX_POSITION: f32 = 16384.0;
+/// Largest preferences file read; the remembered list offsets take most of it.
+const MAX_FILE_BYTES: usize = 65536;
+
+/// Where a song list was left scrolled.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListOffset {
+    /// "album", "playlist" or "liked", as for the route.
+    kind: String,
+    key: String,
+    y: f32,
+}
+impl ListOffset {
+    fn new(list: &Query, y: f32) -> Option<Self> {
+        let (kind, key) = match list {
+            Query::AlbumTracks { album_id } => ("album", album_id.0.clone()),
+            Query::PlaylistTracks { playlist_id } => ("playlist", playlist_id.0.clone()),
+            Query::LikedTracks => ("liked", String::new()),
+            _ => return None,
+        };
+        Some(Self {
+            kind: kind.into(),
+            key,
+            y,
+        })
+    }
+    fn query(&self) -> Option<Query> {
+        if !self.y.is_finite() || self.y < 0.0 || self.key.len() > 1024 {
+            return None;
+        }
+        match self.kind.as_str() {
+            "album" => Some(Query::AlbumTracks {
+                album_id: SpotifyId(self.key.clone()),
+            }),
+            "playlist" => Some(Query::PlaylistTracks {
+                playlist_id: SpotifyId(self.key.clone()),
+            }),
+            "liked" => Some(Query::LikedTracks),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -39,6 +81,8 @@ pub(super) struct Preferences {
     zoom: f32,
     /// Use the window system's title bar instead of the app's own.
     system_title_bar: bool,
+    /// Song list scroll offsets of the owner, least recently left first; absent in older files.
+    lists: Vec<ListOffset>,
 }
 impl Preferences {
     /// Resolve the platform-specific application configuration file.
@@ -59,7 +103,7 @@ impl Preferences {
             Err(e) => return Err(format!("Frontend preferences: {e}")),
         };
         let mut bytes = Vec::new();
-        file.take(16385)
+        file.take(MAX_FILE_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         Self::parse(&bytes)
@@ -67,8 +111,8 @@ impl Preferences {
 
     /// Validate the bytes of a preferences file and bring window fields into safe bounds.
     fn parse(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > 16384 {
-            return Err("Frontend preferences exceed 16 KiB".into());
+        if bytes.len() > MAX_FILE_BYTES {
+            return Err("Frontend preferences exceed 64 KiB".into());
         }
         let mut p: Self = serde_json::from_slice(bytes)
             .map_err(|e| format!("Invalid frontend preferences: {e}"))?;
@@ -122,8 +166,9 @@ impl Preferences {
             AuthState::Ready { user_id } => Some(user_id),
             _ => None,
         };
+        let same_owner: bool = owner.is_some() && owner == self.owner.as_ref();
         // Never restore a route from an unverified or different account. Window size is global.
-        if owner.is_none() || owner != self.owner.as_ref() {
+        if !same_owner {
             self.kind = "library".into();
             self.title = "Home".into();
             self.offset = 0;
@@ -179,6 +224,15 @@ impl Preferences {
         }
         ui.settings = self.settings;
         ui.lyrics_open = self.lyrics && !self.queue;
+        ui.list_scroll = navigation::ListScroll::default();
+        if same_owner {
+            let start: usize = self.lists.len().saturating_sub(navigation::MAX_LIST_OFFSETS);
+            for offset in &self.lists[start..] {
+                if let Some(list) = offset.query() {
+                    ui.list_scroll.remember(&list, offset.y);
+                }
+            }
+        }
     }
 
     /// Restore window geometry, zoom and title bar choice before the window opens.
@@ -256,6 +310,11 @@ impl Preferences {
             queue: ui.queue,
             lyrics: ui.lyrics_open,
             artwork: ui.route_artwork.clone(),
+            lists: ui
+                .current_list_scroll()
+                .entries()
+                .filter_map(|(list, y)| ListOffset::new(list, *y))
+                .collect(),
             ..Self::default()
         };
         p.write_window(ui);
@@ -324,6 +383,25 @@ mod tests {
         assert_eq!(p.x, Some(120.0 - 1180.0));
         let lone = OLD_FILE.replace('}', r#","x":10}"#);
         assert_eq!(Preferences::parse(lone.as_bytes()).unwrap().x, None);
+    }
+
+    #[test]
+    fn list_offsets_round_trip_and_drop_bad_entries() {
+        let file = OLD_FILE.replace(
+            '}',
+            r#","lists":[{"kind":"album","key":"a","y":120},{"kind":"liked","key":"","y":40},{"kind":"artist","key":"b","y":1},{"kind":"playlist","key":"p","y":-5}]}"#,
+        );
+        let p = Preferences::parse(file.as_bytes()).unwrap();
+        let back = Preferences::parse(&serde_json::to_vec(&p).unwrap()).unwrap();
+        let kept: Vec<(Query, f32)> = back
+            .lists
+            .iter()
+            .filter_map(|o| Some((o.query()?, o.y)))
+            .collect();
+        let album = Query::AlbumTracks {
+            album_id: SpotifyId("a".into()),
+        };
+        assert_eq!(kept, vec![(album, 120.0), (Query::LikedTracks, 40.0)]);
     }
 
     #[test]
