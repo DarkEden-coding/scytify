@@ -194,6 +194,10 @@ pub struct ConnectState {
     pub context_uri: Option<String>,
     /// Bounded next-track preview, not a complete editable queue.
     pub queue_preview: Vec<Track>,
+    /// How many leading `queue_preview` tracks the user queued on this device's Spirc; the
+    /// rest come from the playing context or autoplay. Zero for other devices, whose queue
+    /// the Web API reports without that distinction.
+    pub queued: usize,
 }
 
 impl ConnectState {

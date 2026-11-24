@@ -123,7 +123,9 @@ impl Api {
         selected: Option<&Track>,
     ) -> Result<LoadedSource, AppError> {
         // The list is already known, so there is nothing to fetch.
-        if let PlaySource::Tracks { tracks, start } = source {
+        if let PlaySource::Tracks { tracks, start } | PlaySource::Artist { tracks, start, .. } =
+            source
+        {
             return Ok(LoadedSource {
                 source_id: SpotifyId(FILTERED_SOURCE.into()),
                 snapshot_id: FILTERED_SOURCE.into(),
@@ -154,7 +156,7 @@ impl Api {
                 *start_offset,
                 SpotifyId(LIKED_SONGS_SOURCE.into()),
             ),
-            PlaySource::Track(_) | PlaySource::Tracks { .. } => {
+            PlaySource::Track(_) | PlaySource::Tracks { .. } | PlaySource::Artist { .. } => {
                 return Err(err(ErrorKind::InvalidInput, "track is not a collection"));
             }
         };

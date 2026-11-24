@@ -411,6 +411,35 @@ impl<'ct> ConnectState {
         Ok(())
     }
 
+    /// Scytify patch: drops tracks the user queued, keeping the context and autoplay tracks
+    /// that follow them.
+    pub fn clear_queue(&mut self) -> Result<(), Error> {
+        self.next_tracks_mut().retain(|t| !t.is_queue());
+        self.fill_up_next_tracks()?;
+        self.update_queue_revision();
+        self.update_restrictions();
+        Ok(())
+    }
+
+    /// Scytify patch: drops the `occurrence`-th (from zero) queued copy of `uri`.
+    pub fn remove_queued(&mut self, uri: &str, occurrence: usize) -> Result<(), Error> {
+        let next_tracks = self.next_tracks_mut();
+        let Some(index) = next_tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.is_queue() && t.uri == uri)
+            .nth(occurrence)
+            .map(|(index, _)| index)
+        else {
+            return Ok(());
+        };
+        next_tracks.remove(index);
+        self.fill_up_next_tracks()?;
+        self.update_queue_revision();
+        self.update_restrictions();
+        Ok(())
+    }
+
     pub fn add_to_queue(&mut self, mut track: ProvidedTrack, rev_update: bool) {
         track.uid = format!("q{}", self.queue_count);
         self.queue_count += 1;

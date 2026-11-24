@@ -205,6 +205,14 @@ pub enum PlaySource {
         tracks: Vec<Track>,
         start: usize,
     },
+    /// An artist's popular songs. This device plays them as the artist's Spotify context,
+    /// so autoplay follows the artist rather than whatever played before. Players without
+    /// that context play `tracks`, the songs shown, from `start`, like `Tracks`.
+    Artist {
+        artist_id: SpotifyId,
+        tracks: Vec<Track>,
+        start: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +262,8 @@ pub enum Action {
     RemoveQueued {
         entry_id: u64,
     },
+    /// Drop every track the user queued; the playing context and autoplay continue.
+    ClearQueue,
     /// Fetch/decode only bounded artwork sizes; never permit arbitrary filesystem paths.
     Artwork {
         url: String,

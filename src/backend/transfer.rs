@@ -175,6 +175,7 @@ mod tests {
             repeat: RepeatMode::Queue,
             context_uri: Some("spotify:playlist:playlist".into()),
             queue: None,
+            queued: None,
         };
         let transfer = plan(observation.clone(), Some(source), now).unwrap();
         assert_eq!(transfer.pause_device_id.as_deref(), Some("macbook"));

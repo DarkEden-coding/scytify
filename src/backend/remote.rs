@@ -19,6 +19,8 @@ pub(super) struct Observation {
     pub repeat: RepeatMode,
     pub context_uri: Option<String>,
     pub queue: Option<Vec<Track>>,
+    /// Leading `queue` tracks the user queued. Only Connect cluster updates know this.
+    pub queued: Option<usize>,
 }
 
 impl Api {
@@ -214,7 +216,7 @@ impl Api {
                 }
                 return Ok(());
             }
-            Action::PlayNext(_) | Action::RemoveQueued { .. } => {
+            Action::PlayNext(_) | Action::RemoveQueued { .. } | Action::ClearQueue => {
                 return Err(err(
                     ErrorKind::Unavailable,
                     "Spotify's official API cannot insert at the front of or remove from a Connect queue",
@@ -230,7 +232,7 @@ impl Api {
     async fn play_body(&self, token: &str, source: &PlaySource) -> Result<Value, AppError> {
         Ok(match source {
             PlaySource::Track(id) => json!({"uris": [track_uri(id)?], "position_ms": 0}),
-            PlaySource::Tracks { tracks, start } => {
+            PlaySource::Tracks { tracks, start } | PlaySource::Artist { tracks, start, .. } => {
                 // Web API play accepts at most 100 URIs: the selected song and what follows.
                 let uris = tracks
                     .iter()
@@ -380,6 +382,7 @@ fn parse_player(value: &Value, observed_at: Instant) -> Observation {
         },
         context_uri: value["context"]["uri"].as_str().map(str::to_owned),
         queue: None,
+        queued: None,
     }
 }
 
@@ -511,24 +514,35 @@ pub(super) fn apply(
     if (!spirc && !state.connect.is_remote()) || (!has_active && !had_active) {
         return;
     }
+    // Spirc plays through this device's decoder, whose events are newer and more precise
+    // than any account snapshot: a poll can predate the last pause, seek or skip.
+    if spirc && !state.connect.is_remote() {
+        // Only cluster updates tell queued tracks from context ones; Web API polls would
+        // undo that split.
+        let cluster_queue = observation.queue.zip(observation.queued);
+        let queue_changed = cluster_queue.as_ref().is_some_and(|(queue, queued)| {
+            *queued != state.connect.queued
+                || queue
+                    .iter()
+                    .map(|t| &t.id)
+                    .ne(state.connect.queue_preview.iter().map(|t| &t.id))
+        });
+        if queue_changed || state.connect.context_uri != observation.context_uri {
+            state.player.queue_revision = state.player.queue_revision.wrapping_add(1);
+        }
+        if let Some((queue, queued)) = cluster_queue {
+            state.connect.queue_preview = queue;
+            state.connect.queued = queued;
+        }
+        state.connect.context_uri = observation.context_uri;
+        return;
+    }
     let queue_changed = observation.queue.as_ref().is_some_and(|queue| {
         queue
             .iter()
             .map(|t| &t.id)
             .ne(state.connect.queue_preview.iter().map(|t| &t.id))
     });
-    // Spirc plays through this device's decoder, whose events are newer and more precise
-    // than any account snapshot: a poll can predate the last pause, seek or skip.
-    if spirc && !state.connect.is_remote() {
-        if queue_changed || state.connect.context_uri != observation.context_uri {
-            state.player.queue_revision = state.player.queue_revision.wrapping_add(1);
-        }
-        if let Some(queue) = observation.queue {
-            state.connect.queue_preview = queue;
-        }
-        state.connect.context_uri = observation.context_uri;
-        return;
-    }
     let old_track = state.player.current.as_ref().map(|track| &track.id);
     let same_playback = previous_device == state.connect.active_device_id
         && old_track == observation.track.as_ref().map(|track| &track.id);
@@ -547,6 +561,7 @@ pub(super) fn apply(
     if changed {
         state.connect.queue_preview.clear();
     }
+    state.connect.queued = 0;
     if let Some(queue) = observation.queue {
         state.connect.queue_preview = queue;
     }
@@ -601,6 +616,7 @@ pub(super) fn is_control(action: &Action) -> bool {
             | Action::PlayNext(_)
             | Action::AddToQueue(_)
             | Action::RemoveQueued { .. }
+            | Action::ClearQueue
     )
 }
 
@@ -631,7 +647,7 @@ pub(super) fn queue_page(
                 track_id: track.id.clone(),
             },
             track: Some(track.clone()),
-            explicit: false,
+            explicit: start + index < state.connect.queued,
         })
         .collect();
     Ok(Response::Page(PageData::Queue {

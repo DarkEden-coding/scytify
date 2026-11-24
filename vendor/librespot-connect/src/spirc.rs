@@ -136,6 +136,8 @@ enum SpircCommand {
     Activate,
     Transfer(Option<TransferRequest>),
     Load(LoadRequest),
+    ClearQueue,
+    RemoveQueued { uri: String, occurrence: usize },
 }
 
 const CONTEXT_FETCH_THRESHOLD: usize = 2;
@@ -405,6 +407,22 @@ impl Spirc {
     /// Does not [Spirc::transfer] the playback. Does nothing if we are not the active device.
     pub fn activate(&self) -> Result<(), Error> {
         Ok(self.commands.send(SpircCommand::Activate)?)
+    }
+
+    /// Scytify patch: removes every track the user queued.
+    ///
+    /// Does nothing if we are not the active device.
+    pub fn clear_queue(&self) -> Result<(), Error> {
+        Ok(self.commands.send(SpircCommand::ClearQueue)?)
+    }
+
+    /// Scytify patch: removes the `occurrence`-th (from zero) queued copy of `uri`.
+    ///
+    /// Does nothing if we are not the active device.
+    pub fn remove_queued(&self, uri: String, occurrence: usize) -> Result<(), Error> {
+        Ok(self
+            .commands
+            .send(SpircCommand::RemoveQueued { uri, occurrence })?)
     }
 
     /// Acquires the control as active connect device over the transfer flow.
@@ -684,6 +702,10 @@ impl SpircTask {
             SpircCommand::SetPosition(position) => self.handle_seek(position),
             SpircCommand::SetVolume(volume) => self.set_volume(volume),
             SpircCommand::Load(command) => self.handle_load(command, None, None).await?,
+            SpircCommand::ClearQueue => self.connect_state.clear_queue()?,
+            SpircCommand::RemoveQueued { uri, occurrence } => {
+                self.connect_state.remove_queued(&uri, occurrence)?
+            }
         };
 
         self.notify().await

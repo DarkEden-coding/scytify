@@ -72,6 +72,12 @@ pub(super) fn handle_command(
         handles.insert(id, h);
         return None;
     }
+    if !state.connect.is_remote()
+        && let Some(connect) = player.as_ref().and_then(|p| p.connect.as_ref())
+        && let Some(result) = edit_spirc_queue(connect, state, &action)
+    {
+        return Some(result);
+    }
     if super::remote::routes_remote(state, &action)
         || player.as_ref().is_some_and(|p| p.connect.is_some())
             && matches!(
@@ -700,6 +706,12 @@ pub(super) fn handle_command(
                 )))
             }
         }
+        Action::ClearQueue => {
+            q.snapshot.explicit_queue.clear();
+            q.snapshot.play_next_count = 0;
+            sync_queue(state, q);
+            ok!()
+        }
         Action::SetVisible(_) => ok!(),
         Action::Quit
         | Action::RetryLogin
@@ -708,6 +720,43 @@ pub(super) fn handle_command(
         | Action::SetDeviceVolume { .. }
         | Action::RefreshDevices => unreachable!(),
     }
+}
+
+/// Removes queued tracks through this device's Spirc, which owns the queue while it plays
+/// here; the Web API cannot remove them. `None` for any other action.
+fn edit_spirc_queue(
+    connect: &super::connect::Connect,
+    state: &AppState,
+    action: &Action,
+) -> Option<Result<Response, AppError>> {
+    let sent = match action {
+        Action::ClearQueue => connect.spirc.clear_queue(),
+        Action::RemoveQueued { entry_id } => {
+            // `queue_page` numbers the preview from one.
+            let queued = &state.connect.queue_preview[..state.connect.queued];
+            let Some(index) = (*entry_id as usize)
+                .checked_sub(1)
+                .filter(|&index| index < queued.len())
+            else {
+                return Some(Err(safe(
+                    ErrorKind::InvalidInput,
+                    "queue occurrence not found",
+                )));
+            };
+            let id = &queued[index].id;
+            let occurrence = queued[..index].iter().filter(|t| &t.id == id).count();
+            let uri = match super::remote::track_uri(id) {
+                Ok(uri) => uri,
+                Err(error) => return Some(Err(error)),
+            };
+            connect.spirc.remove_queued(uri, occurrence)
+        }
+        _ => return None,
+    };
+    Some(
+        sent.map(|()| Response::Accepted)
+            .map_err(|e| safe(ErrorKind::Unavailable, &e.to_string())),
+    )
 }
 
 /// Starts playback through Spirc without Web API round trips. Collections load as Spotify
@@ -745,10 +794,10 @@ fn play_with_connect(
     let AuthState::Ready { user_id } = &state.auth else {
         return Err(safe(ErrorKind::Authentication, "sign in first"));
     };
-    let (uri, index) = super::connect::context_uri(source, user_id)
+    let (uri, start) = super::connect::context_uri(source, user_id)
         .ok_or_else(|| safe(ErrorKind::InvalidInput, "track is not a collection"))?;
     connect
-        .load_context(uri, index, q.snapshot.shuffle, q.snapshot.repeat)
+        .load_context(uri, start, q.snapshot.shuffle, q.snapshot.repeat)
         .map_err(|e| safe(ErrorKind::Unavailable, &e))?;
     // Invalidates source loads still in flight from before this request.
     sync_queue(state, q);

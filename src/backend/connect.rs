@@ -147,18 +147,22 @@ impl Connect {
             .map_err(|e| e.to_string())
     }
 
-    /// Starts a playlist, album, or collection context at its raw item index. Spirc resolves
-    /// the context itself, so playback starts without gathering membership through the Web API.
+    /// Starts a playlist, album, artist, or collection context at `start`. Spirc resolves the
+    /// context itself, so playback starts without gathering membership through the Web API.
     pub fn load_context(
         &self,
         context_uri: String,
-        index: u64,
+        start: ContextStart,
         shuffle: bool,
         repeat: RepeatMode,
     ) -> Result<(), String> {
+        let playing_track = match start {
+            ContextStart::Index(index) => PlayingTrack::Index(index.min(u32::MAX as u64) as u32),
+            ContextStart::Uri(uri) => PlayingTrack::Uri(uri),
+        };
         let options = LoadRequestOptions {
             start_playing: true,
-            playing_track: Some(PlayingTrack::Index(index.min(u32::MAX as u64) as u32)),
+            playing_track: Some(playing_track),
             // Loading resets Spirc's options, so the current ones travel with the request.
             context_options: Some(LoadContextOptions::Options(Options {
                 shuffle,
@@ -174,20 +178,47 @@ impl Connect {
     }
 }
 
-/// Spotify context URI for a collection source; `None` for a single track.
-pub(super) fn context_uri(source: &PlaySource, user_id: &str) -> Option<(String, u64)> {
+/// Where playback starts in a Spotify context.
+#[derive(Debug, PartialEq)]
+pub(super) enum ContextStart {
+    /// Raw item index.
+    Index(u64),
+    /// The first item with this track URI.
+    Uri(String),
+}
+
+/// Spotify context URI for a collection source; `None` for a single track or an explicit
+/// list.
+pub(super) fn context_uri(source: &PlaySource, user_id: &str) -> Option<(String, ContextStart)> {
     match source {
         PlaySource::Playlist {
             playlist_id,
             start_offset,
-        } => Some((format!("spotify:playlist:{}", playlist_id.0), *start_offset)),
+        } => Some((
+            format!("spotify:playlist:{}", playlist_id.0),
+            ContextStart::Index(*start_offset),
+        )),
         PlaySource::Album {
             album_id,
             start_offset,
-        } => Some((format!("spotify:album:{}", album_id.0), *start_offset)),
-        PlaySource::LikedSongs { start_offset } => {
-            Some((format!("spotify:user:{user_id}:collection"), *start_offset))
-        }
+        } => Some((
+            format!("spotify:album:{}", album_id.0),
+            ContextStart::Index(*start_offset),
+        )),
+        PlaySource::LikedSongs { start_offset } => Some((
+            format!("spotify:user:{user_id}:collection"),
+            ContextStart::Index(*start_offset),
+        )),
+        // The artist context starts with the popular songs, though not necessarily in the
+        // order the page shows them, so the clicked song is found by URI.
+        PlaySource::Artist {
+            artist_id,
+            tracks,
+            start,
+        } => Some((
+            format!("spotify:artist:{}", artist_id.0),
+            ContextStart::Uri(remote::track_uri(&tracks.get(*start)?.id).ok()?),
+        )),
         PlaySource::Track(_) | PlaySource::Tracks { .. } => None,
     }
 }
@@ -277,6 +308,15 @@ fn parse_cluster(cluster: &librespot_protocol::connect::Cluster) -> Observation 
         .track
         .as_ref()
         .and_then(|t| parse_track(t, player.duration.max(0) as u64));
+    // Spirc keeps the tracks the user queued ahead of the context's.
+    let next: Vec<(Track, bool)> = player
+        .next_tracks
+        .iter()
+        .take(remote::QUEUE_PREVIEW_LIMIT)
+        .filter_map(|track| Some((parse_track(track, 0)?, track.provider == "queue")))
+        .collect();
+    let queued: usize = next.iter().take_while(|(_, queued)| *queued).count();
+    let queue: Vec<Track> = next.into_iter().map(|(track, _)| track).collect();
     Observation {
         devices: Some(devices),
         active,
@@ -293,14 +333,8 @@ fn parse_cluster(cluster: &librespot_protocol::connect::Cluster) -> Observation 
             RepeatMode::Off
         },
         context_uri: (!player.context_uri.is_empty()).then(|| player.context_uri.clone()),
-        queue: Some(
-            player
-                .next_tracks
-                .iter()
-                .take(remote::QUEUE_PREVIEW_LIMIT)
-                .filter_map(|track| parse_track(track, 0))
-                .collect(),
-        ),
+        queue: Some(queue),
+        queued: Some(queued),
     }
 }
 
@@ -362,7 +396,10 @@ mod tests {
         };
         assert_eq!(
             context_uri(&playlist, "me"),
-            Some(("spotify:playlist:0123456789012345678901".into(), 7))
+            Some((
+                "spotify:playlist:0123456789012345678901".into(),
+                ContextStart::Index(7)
+            ))
         );
         let album = PlaySource::Album {
             album_id: id(),
@@ -370,11 +407,38 @@ mod tests {
         };
         assert_eq!(
             context_uri(&album, "me"),
-            Some(("spotify:album:0123456789012345678901".into(), 2))
+            Some((
+                "spotify:album:0123456789012345678901".into(),
+                ContextStart::Index(2)
+            ))
         );
         assert_eq!(
             context_uri(&PlaySource::LikedSongs { start_offset: 40 }, "me"),
-            Some(("spotify:user:me:collection".into(), 40))
+            Some(("spotify:user:me:collection".into(), ContextStart::Index(40)))
+        );
+        let track = |id: &str, playable| Track {
+            id: SpotifyId(id.into()),
+            name: "Song".into(),
+            artists: vec![],
+            album: None,
+            duration_ms: 1000,
+            playable,
+            source_index: None,
+        };
+        let artist = PlaySource::Artist {
+            artist_id: id(),
+            tracks: vec![
+                track("1123456789012345678901", true),
+                track("2123456789012345678901", true),
+            ],
+            start: 1,
+        };
+        assert_eq!(
+            context_uri(&artist, "me"),
+            Some((
+                "spotify:artist:0123456789012345678901".into(),
+                ContextStart::Uri("spotify:track:2123456789012345678901".into())
+            ))
         );
         assert_eq!(context_uri(&PlaySource::Track(id()), "me"), None);
     }
@@ -397,13 +461,18 @@ mod tests {
             ..Default::default()
         };
         player.track = Some(track.clone()).into();
-        player.next_tracks = vec![track.clone(), track];
+        let queued = librespot_protocol::player::ProvidedTrack {
+            provider: "queue".into(),
+            ..track.clone()
+        };
+        player.next_tracks = vec![queued, track];
         player.options.mut_or_insert_default().repeating_context = true;
         cluster.player_state = Some(player).into();
         let observation = parse_cluster(&cluster);
         assert_eq!(observation.position_ms, 5000);
         assert_eq!(observation.repeat, RepeatMode::Queue);
         assert_eq!(observation.queue.unwrap().len(), 2);
+        assert_eq!(observation.queued, Some(1));
         assert_eq!(observation.active.unwrap().id.as_deref(), Some("phone"));
         cluster.player_state.mut_or_insert_default().timestamp = 0;
         assert_eq!(parse_cluster(&cluster).position_ms, 3000);

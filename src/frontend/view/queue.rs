@@ -1,4 +1,5 @@
-//! Optional queue panel: the current track and a virtualized "Next up" list.
+//! Optional queue panel: the current track, then a virtualized list of the songs the user
+//! queued ("Next in queue") over the rest of the playing context ("Next up").
 use super::sidebar::{FADE, GUTTER, gutter_scrollbar};
 use super::*;
 use crate::frontend::artwork::Shape;
@@ -7,6 +8,16 @@ use iced::widget::column;
 use iced::widget::scrollable;
 
 const THUMB: f32 = 40.0;
+
+/// One fixed-height line of the upcoming list. Headings take a row each so the list stays
+/// uniform for virtualization.
+enum Slot<'a> {
+    /// "Next in queue", with the Clear queue button.
+    Queued,
+    /// "Next up": the context after the queued songs.
+    Context,
+    Item(&'a QueueItem),
+}
 
 impl Ui {
     pub(super) fn queue_view(&self) -> Element<'_> {
@@ -23,9 +34,10 @@ impl Ui {
             Some(track) => self.queue_row(track, true, None),
             None => self.subdued("Nothing playing").into(),
         });
-        content = content.push(self.strong("Next up"));
         content = content.push(if self.state.connect.is_remote() {
-            self.remote_next_up()
+            column![self.strong("Next up"), self.remote_next_up()]
+                .spacing(p.shape.spacing * 1.5)
+                .into()
         } else {
             self.next_up()
         });
@@ -41,27 +53,38 @@ impl Ui {
             return self.subdued("Loading queue…").into();
         };
         let items: Vec<&QueueItem> = self.queue_items();
+        // Queued songs always play before the context's.
+        let queued: usize = items.iter().take_while(|item| item.explicit).count();
+        let mut slots: Vec<Slot> = Vec::with_capacity(items.len() + 2);
+        if queued > 0 {
+            slots.push(Slot::Queued);
+        }
+        slots.extend(items[..queued].iter().map(|item| Slot::Item(item)));
+        slots.push(Slot::Context);
+        slots.extend(items[queued..].iter().map(|item| Slot::Item(item)));
         let height: f32 = p.shape.row_height;
         let (start, end) =
-            visible_rows(items.len(), self.queue_scroll, self.queue_viewport, height);
+            visible_rows(slots.len(), self.queue_scroll, self.queue_viewport, height);
         let mut rows = column![space().height(start as f32 * height)];
-        for item in &items[start..end] {
-            let remove: Option<Message> =
-                item.explicit
-                    .then_some(Message::Action(Action::RemoveQueued {
-                        entry_id: item.entry.entry_id,
-                    }));
-            rows = rows.push(match &item.track {
-                Some(track) => self.queue_row(track, false, remove),
-                None => container(self.subdued("Metadata unavailable"))
-                    .height(height)
-                    .align_y(Alignment::Center)
-                    .into(),
+        for slot in &slots[start..end] {
+            rows = rows.push(match slot {
+                Slot::Queued => self.queue_heading(
+                    "Next in queue",
+                    Some(
+                        button(self.subdued("Clear queue"))
+                            .padding(0)
+                            .style(styles::link(p))
+                            .on_press(Message::Action(Action::ClearQueue))
+                            .into(),
+                    ),
+                ),
+                Slot::Context => self.queue_heading("Next up", None),
+                Slot::Item(item) => self.queue_item(item),
             });
         }
-        rows = rows.push(space().height((items.len() - end) as f32 * height));
-        if items.is_empty() {
-            rows = rows.push(self.subdued("Your queue is empty"));
+        rows = rows.push(space().height((slots.len() - end) as f32 * height));
+        if items.len() == queued {
+            rows = rows.push(self.subdued("Nothing else is coming up"));
         }
         if self.queue_more.is_some() {
             rows = rows.push(container(self.subdued("Loading…")).padding([8, 0]));
@@ -74,6 +97,35 @@ impl Ui {
             );
         }
         self.queue_scroll_area(rows)
+    }
+
+    /// A section heading row, with an optional action at its right.
+    fn queue_heading<'a>(&self, title: &'a str, action: Option<Element<'a>>) -> Element<'a> {
+        let mut cells =
+            row![self.strong(title), space().width(Length::Fill)].align_y(Alignment::Center);
+        if let Some(action) = action {
+            cells = cells.push(action);
+        }
+        container(cells.padding(iced::Padding::ZERO.right(GUTTER)))
+            .height(self.palette.shape.row_height)
+            .align_y(Alignment::Center)
+            .into()
+    }
+
+    /// An upcoming song; songs the user queued can be removed.
+    fn queue_item<'a>(&'a self, item: &'a QueueItem) -> Element<'a> {
+        let remove: Option<Message> =
+            item.explicit
+                .then_some(Message::Action(Action::RemoveQueued {
+                    entry_id: item.entry.entry_id,
+                }));
+        match &item.track {
+            Some(track) => self.queue_row(track, false, remove),
+            None => container(self.subdued("Metadata unavailable"))
+                .height(self.palette.shape.row_height)
+                .align_y(Alignment::Center)
+                .into(),
+        }
     }
 
     /// Another device's upcoming tracks, as far as Spotify reports them. The official API

@@ -496,6 +496,7 @@ async fn serve(mut port: BackendPort, mut state: AppState) {
         ),
         context_uri: Some("spotify:playlist:previewplaylist3".into()),
         queue_preview: tracks[1..13].to_vec(),
+        queued: 0,
         devices: vec![
             PlaybackDevice {
                 id: Some("preview-local".into()),

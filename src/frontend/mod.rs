@@ -2602,6 +2602,9 @@ fn context_query(source: &PlaySource) -> Option<Query> {
             album_id: album_id.clone(),
         }),
         PlaySource::LikedSongs { .. } => Some(Query::LikedTracks),
+        PlaySource::Artist { artist_id, .. } => Some(Query::ArtistAlbums {
+            artist_id: artist_id.clone(),
+        }),
         PlaySource::Track(_) | PlaySource::Tracks { .. } => None,
     }
 }
@@ -3824,6 +3827,33 @@ mod browsing_tests {
         ));
         ui.query = Query::Search { text: "b".into() };
         assert!(matches!(ui.source(&items, 0, 1), PlaySource::Track(id) if id.0 == "b"));
+    }
+
+    /// Regression: a popular song plays in its artist's context, so autoplay follows the
+    /// artist instead of the songs heard before it.
+    #[test]
+    fn popular_songs_play_in_the_artist_context() {
+        let (mut ui, _back) = channel_tests::fixture();
+        let mut unavailable = track("x", None);
+        unavailable.playable = false;
+        let items = vec![track("a", None), unavailable, track("b", None)];
+        ui.query = Query::ArtistAlbums {
+            artist_id: SpotifyId("artist".into()),
+        };
+        let PlaySource::Artist {
+            artist_id,
+            tracks,
+            start,
+        } = ui.source(&items, 0, 2)
+        else {
+            panic!("expected the artist context");
+        };
+        assert_eq!(artist_id.0, "artist");
+        assert_eq!(
+            tracks.iter().map(|t| t.id.0.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(tracks[start].id.0, "b");
     }
 
     /// Typing searches the mixed overview and refines it in place; clearing the field

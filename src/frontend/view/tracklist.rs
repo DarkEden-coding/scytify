@@ -330,6 +330,14 @@ impl Ui {
                 start_offset,
             },
             Query::LikedTracks => PlaySource::LikedSongs { start_offset },
+            // Popular songs on the artist page, or all of them.
+            Query::ArtistAlbums { artist_id } | Query::ArtistTopTracks { artist_id } => {
+                PlaySource::Artist {
+                    artist_id: artist_id.clone(),
+                    tracks: items.iter().filter(|t| t.playable).cloned().collect(),
+                    start: items[..index].iter().filter(|t| t.playable).count(),
+                }
+            }
             _ => PlaySource::Track(track.id.clone()),
         }
     }

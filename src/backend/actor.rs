@@ -587,6 +587,7 @@ fn finish_job(
                 state.connect.activate_this_device();
                 state.connect.context_uri = transfer.context_uri;
                 state.connect.queue_preview.clear();
+                state.connect.queued = 0;
                 sync_queue(state, q);
                 state.player.current = q
                     .snapshot
@@ -1811,6 +1812,7 @@ fn action_changes_session(action: &Action) -> bool {
             | Action::PlayNext(_)
             | Action::AddToQueue(_)
             | Action::RemoveQueued { .. }
+            | Action::ClearQueue
     )
 }
 

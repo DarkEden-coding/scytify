@@ -226,7 +226,10 @@ impl Preferences {
         ui.lyrics_open = self.lyrics && !self.queue;
         ui.list_scroll = navigation::ListScroll::default();
         if same_owner {
-            let start: usize = self.lists.len().saturating_sub(navigation::MAX_LIST_OFFSETS);
+            let start: usize = self
+                .lists
+                .len()
+                .saturating_sub(navigation::MAX_LIST_OFFSETS);
             for offset in &self.lists[start..] {
                 if let Some(list) = offset.query() {
                     ui.list_scroll.remember(&list, offset.y);
